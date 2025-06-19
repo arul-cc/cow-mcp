@@ -7,10 +7,7 @@ from typing import Tuple
 
 from utils import utils
 from utils.debug import logger
-from mcpconfig import mcp
-
-
-
+from tools.mcpconfig import mcp
 
 
 @mcp.tool(name="fetch_unique_node_data_and_schema",description="Fetch unique node data and schema")
