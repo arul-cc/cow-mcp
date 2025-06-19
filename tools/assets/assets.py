@@ -13,12 +13,12 @@ from tools.mcpconfig import mcp
 from constants import constants
 
 @mcp.tool()
-async def list_integrations() -> list:
+async def list_assets() -> list:
     """
-        Get all integrations
+        Get all assets
     """
     try:
-        logger.info("get_integration_list: \n")
+        logger.info("get_assets_list: \n")
 
         output=await utils.make_GET_API_call_to_CCow(constants.API_LIST_ASSETS)
         # logger.debug("output: {}\n".format(output))
@@ -28,24 +28,24 @@ async def list_integrations() -> list:
             if "name" in item:
                 categories.append({"id":item["id"],"name":item["name"]})
         
-        logger.debug("integrations: {}\n".format(categories))
+        logger.debug("assets: {}\n".format(categories))
 
         return categories
     except Exception as e:
         logger.error(traceback.format_exc())
-        logger.error("list_integrations error: {}\n".format(e))
+        logger.error("list_assets error: {}\n".format(e))
         return "Facing internal error"
 
 @mcp.tool()
-async def fetch_integration_summary(id: str) -> dict:
+async def fetch_assets_summary(id: str) -> dict:
     """
-        Get integration summary for given assessment id
+        Get assets summary for given assessment id
 
         Args:
         id: assessment id
     """
     try:
-        logger.info("fetch_integration_summary: \n")
+        logger.info("fetch_assets_summary: \n")
         output=await utils.make_API_call_to_CCow({
             "planID": id,
         },constants.API_FETCH_ASSETS_SUMMARY)
@@ -57,14 +57,14 @@ async def fetch_integration_summary(id: str) -> dict:
         return output
     except Exception as e:
         logger.error(traceback.format_exc())
-        logger.error("fetch_integration_summary error: {}\n".format(e))
+        logger.error("fetch_assets_summary error: {}\n".format(e))
         return "Facing internal error"
 
 @mcp.tool()
 async def fetch_resource_types(id: str, page: int=1, pageSize: int=0) -> dict:
     """
-        Get resource types for given integration run id.
-        Use 'fetch_integration_summary' tool to get integration run id
+        Get resource types for given asset run id.
+        Use 'fetch_assets_summary' tool to get assets run id
         Function accepts page number (page) and page size (pageSize) for pagination. If MCP client host unable to handle large response use page and pageSize.
         If the request times out retry with pagination, increasing pageSize from 50 to 100.
 
@@ -74,7 +74,7 @@ async def fetch_resource_types(id: str, page: int=1, pageSize: int=0) -> dict:
         4. Summarize all results together
 
         Args:
-        id: integration run id
+        id: asset run id
     """
 
     try:
@@ -112,8 +112,8 @@ async def fetch_resource_types(id: str, page: int=1, pageSize: int=0) -> dict:
 @mcp.tool()
 async def fetch_checks(id: str, resourceType: str, page: int=1, pageSize: int=0, complianceStatus: str="") -> dict | str:
     """
-        Get checks for given integration run id and resource type. Use this function to get all checks for given integration run id and resource type
-        Use 'fetch_integration_summary' tool to get integration run id
+        Get checks for given assets run id and resource type. Use this function to get all checks for given assets run id and resource type
+        Use 'fetch_assets_summary' tool to get asset run id
         Use 'fetch_resource_types' tool to get all resource types
         Function accepts page number (page) and page size (pageSize) for pagination. If MCP client host unable to handle large response use page and pageSize.
         If the request times out retry with pagination, increasing pageSize from 5 to 10.
@@ -127,7 +127,7 @@ async def fetch_checks(id: str, resourceType: str, page: int=1, pageSize: int=0,
         4. Summarize all results together
 
         Args:
-        id: integration run id
+        id: asset run id
         resourceType: resource type
         complianceStatus
     """
@@ -169,7 +169,7 @@ async def fetch_checks(id: str, resourceType: str, page: int=1, pageSize: int=0,
 @mcp.tool()
 async def fetch_resources(id: str, resourceType: str, page: int=1, pageSize: int=0, complianceStatus: str="") -> dict | str:
     """
-        Get resources for given integration run id and resource type
+        Get resources for given asset run id and resource type
         Function accepts page number (page) and page size (pageSize) for pagination. If MCP client host unable to handle large response use page and pageSize, default page is 1
         If the request times out retry with pagination, increasing pageSize from 5 to 10.
 
@@ -182,7 +182,7 @@ async def fetch_resources(id: str, resourceType: str, page: int=1, pageSize: int
         4. Summarize all results together
    
         Args:
-        id: integration run id
+        id: asset run id
         resourceType: resource type
         complianceStatus
     """
@@ -220,7 +220,7 @@ async def fetch_resources(id: str, resourceType: str, page: int=1, pageSize: int
 @mcp.tool()
 async def fetch_resources_with_this_check(id: str, resourceType: str, check: str, page: int=1, pageSize: int=0) -> dict | str:
     """
-        Get checks for given integration run id, resource type and check
+        Get checks for given asset run id, resource type and check
         Function accepts page number (page) and page size (pageSize) for pagination. If MCP client host unable to handle large response use page and pageSize.
         If the request times out retry with pagination, increasing pageSize from 10 to 50.
 
@@ -233,7 +233,7 @@ async def fetch_resources_with_this_check(id: str, resourceType: str, check: str
         4. Summarize all results together
 
         Args:
-        id: integration run id
+        id: asset run id
         resourceType: resource type
     """
     try:
@@ -280,15 +280,15 @@ async def fetch_resource_types_summary(id: str) -> dict:
     """
         Use this to get the summary on resource types
         Use this when total items in 'fetch_resource_types' is high
-        Get resource types summary for given integration run id.
-        Use 'fetch_integration_summary' tool to get integration run id
+        Get resource types summary for given asset run id.
+        Use 'fetch_assets_summary' tool to get asset run id
         Paginated data is enough for summary
         Get a summarized view of resource types including: 
             - totalResourceTypes
             - totalResources
 
         Args:
-        id: integration run id
+        id: asset run id
     """
 
     try:
@@ -338,7 +338,7 @@ async def fetch_checks_summary(id: str, resourceType: str) -> dict | str:
     """
         Use this to get the summary on checks
         Use this when total items in 'fetch_checks' is high
-        Get checks summary for given integration run id and resource type.
+        Get checks summary for given asset run id and resource type.
         Get a summarized view of resources based on
             - Compliance breakdown for checks
                 - Total Checks available
@@ -346,7 +346,7 @@ async def fetch_checks_summary(id: str, resourceType: str) -> dict | str:
                 - Total non-compliant checks
 
         Args:
-        id: integration run id
+        id: asset run id
         resourceType: resource type
     """
     try:
@@ -372,7 +372,7 @@ async def fetch_resources_summary(id: str, resourceType: str) -> dict | str:
     """
         Use this to get the summary on resource 
         Use this when total items in 'fetch_resources' is high
-        Fetch a summary of resources for a given integration run id and resource type.
+        Fetch a summary of resources for a given asset run id and resource type.
         Get a summarized view of resources include
             - Compliance breakdown for resource
                 - Total Resources available
@@ -380,7 +380,7 @@ async def fetch_resources_summary(id: str, resourceType: str) -> dict | str:
                 - Total non-compliant resources
 
     Args:
-        id: integration run ID
+        id: asset run ID
         resourceType: resource type
     """
     try:
@@ -406,7 +406,7 @@ async def fetch_resources_with_this_check_summary(id: str, resourceType: str, ch
     """
         Use this to get the summary on check resources 
         Use this when total items in 'fetch_resources_for_check' is high
-        Get check resources summary for given integration run id, resource type and check
+        Get check resources summary for given asset run id, resource type and check
         Paginated data is enough for summary
         Get a summarized view of check resources based on
             - Compliance breakdown for resources
@@ -415,7 +415,7 @@ async def fetch_resources_with_this_check_summary(id: str, resourceType: str, ch
                 - Total non-compliant resources
 
         Args:
-        id: integration run id
+        id: asset run id
         resourceType: resource type
 
     """
