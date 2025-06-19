@@ -5,7 +5,7 @@ import sys
 from utils.debug import logger
 from utils.auth import CCowOAuthProvider
 
-from mcpconfig import mcp
+from tools.mcpconfig import mcp
 from tools.assessments.config import  config
 from tools.assessments.run import  run
 from tools.graphdb import  graphdb
