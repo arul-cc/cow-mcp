@@ -75,10 +75,25 @@ The MCP tools and resources of ComplianceCow can be accessed through the <span>O
 > 
 > CCOW\_HOST: You can replace the default hostname with the hostname of the dedicated ComplianceCow instance deployed for you.<span style="font-size: 16px;"> </span>
 
-\[/et\_pb\_text\]\[et\_pb\_code \_builder\_version="4.22.1″ \_module\_preset="default" hover\_enabled="0″ global\_colors\_info="{}" sticky\_enabled="0″\]
 
-```
-{        "mcpServers": {                "ComplianceCow": {                        "args": [                                "--directory",                                "<<MCP_SERVER_CODE_PATH>>",                                "run",                                "main.py"                        ],                        "command": "<<UV_BIN_PATH>>",                        "env": {                                "CCOW_HOST": "https://partner.compliancecow.live/api",                                "CCOW_CLIENT_ID": "<<YOUR_CCOW_CLIENT_ID>>",                                "CCOW_CLIENT_SECRET": "<<YOUR_CCOW_CLIENT_SECRET>>"                        }                }        }}
+```{
+  "mcpServers": {
+    "ComplianceCow": {
+      "args": [
+        "--directory",
+        "<<MCP_SERVER_CODE_PATH>>",
+        "run",
+        "main.py"
+      ],
+      "command": "<<UV_BIN_PATH>>",
+      "env": {
+        "CCOW_HOST": "https://partner.compliancecow.live/api",
+        "CCOW_CLIENT_ID": "<<YOUR_CCOW_CLIENT_ID>>",
+        "CCOW_CLIENT_SECRET": "<<YOUR_CCOW_CLIENT_SECRET>>"
+      }
+    }
+  }
+}
 ```
 
 
