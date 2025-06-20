@@ -1,3 +1,19 @@
+## Table of Contents
+
+1. **ComplianceCow MCP Server**<br>
+    1.1. [Introduction](#introduction)  
+    1.2. [Glossary](#glossary)  
+    1.3. [Architecture](#architecture)  
+    1.4. [Getting Started](#getting-started)  
+    1.4.1. [Dependencies](#dependencies)  
+    1.4.2. [Authentication](#authentication)  
+    1.4.3. [Configuration](#configuration)  
+    1.4.4. [Usage in MCP Host](#usage-in-mcp-host)  
+    1.4.5. [Running Locally](#running-locally)  
+    1.5. [API Endpoints](#api-endpoints)
+
+
+
 Model Context Protocol (MCP)
 ----------------------------
 
