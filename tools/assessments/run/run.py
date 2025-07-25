@@ -34,6 +34,8 @@ async def fetch_recent_assessment_runs(id: str) -> vo.AssessmentRunListVO:
                 - computedScore (str): Computed score.
                 - computedWeight (str): Computed weight.
                 - complianceStatus (str): Compliance status.
+                - compliancePCT (str): Compliance percentage.
+                - complianceWeight (str): Compliance weight.
                 - createdAt (str): Time and date when the assessement run was created. 
             - error (Optional[str]): An error message if any issues occurred during retrieval.
     """
@@ -64,6 +66,8 @@ async def fetch_recent_assessment_runs(id: str) -> vo.AssessmentRunListVO:
                     computedScore =  item.get("computedScore"),
                     computedWeight = item.get("computedWeight"),
                     complianceStatus = item.get("complianceStatus"),
+                    compliancePCT = item.get("compliancePCT__"),
+                    complianceWeight = item.get("complianceWeight__"),
                     createdAt = item.get("createdAt"),
                 )
                 recentAssessmentRuns.append(filtered_item)
@@ -101,6 +105,8 @@ async def fetch_assessment_runs(id: str, page: int=1, pageSize: int=0) -> vo.Ass
                 - computedScore (str): Computed score.
                 - computedWeight (str): Computed weight.
                 - complianceStatus (str): Compliance status.
+                - compliancePCT (str): Compliance percentage.
+                - complianceWeight (str): Compliance weight.
                 - createdAt (str): Time and date when the assessement run was created. 
             - error (Optional[str]): An error message if any issues occurred during retrieval.
     """
@@ -143,6 +149,8 @@ async def fetch_assessment_runs(id: str, page: int=1, pageSize: int=0) -> vo.Ass
                     computedScore =  item.get("computedScore"),
                     computedWeight = item.get("computedWeight"),
                     complianceStatus = item.get("complianceStatus"),
+                    compliancePCT = item.get("compliancePCT__"),
+                    complianceWeight = item.get("complianceWeight__"),
                     createdAt = item.get("createdAt"),
                 )
                 assessmentRuns.append(filtered_item)
@@ -532,7 +540,53 @@ async def fetch_evidence_records(id: str, compliantStatus: str = "") -> vo.Recor
         logger.error("fetch_evidence_records error: {}\n".format(e))
         return vo.RecordListVO(error="Facing internal error")
     
+@mcp.tool()
+async def fetch_evidence_record_schema(id: str) -> vo.RecordSchemaListVO:
+    """
+    Get evidence record schema for a given evidence ID.
+    Returns the schema of evidence record.
+
+    Args:
+        - id (str): Evidence ID
     
+    Returns:
+        - records (List[RecordListVO]): List of evidence record schema.
+        - error (Optional[str]): An error message if any issues occurred during retrieval.
+    """
+    try:
+        output=await utils.make_API_call_to_CCow({
+            "evidenceID": id,
+            "templateType": "evidence",
+            "status": ["active"],
+            "returnFormat": "json",
+            "isSrcFetchCall": True,
+            "isUserPriority": True,
+            "considerFileSizeRestriction": True,
+            "viewEvidenceFlow": True
+        },constants.URL_DATAHANDLER_FETCH_DATA)
+        logger.debug("output: {}\n".format(json.dumps(output)))
+
+        if isinstance(output, str) or  "error" in output:
+            logger.error("fetch_evidence_record_schema error: {}\n".format(output))
+            return vo.RecordSchemaListVO(error="Facing internal error")
+        
+        if(output.get("Message") == "CANNOT_FIND_THE_FILE"):
+            return vo.RecordSchemaListVO(error="No data available to display")
+        
+        evidence_record_schema: List[vo.RecordSchemaVO]= []
+
+        for item in output["config"]["srcConfig"]:
+            if "name" in item and "type" in item:
+                evidence_record_schema.append(vo.RecordSchemaVO.model_validate(item))
+
+        RecordSchemaListVO = vo.RecordSchemaListVO(schema=evidence_record_schema)
+        logger.debug("Modified output: {}\n".format(RecordSchemaListVO.model_dump()))
+        return RecordSchemaListVO.model_dump()
+    
+    except Exception as e:
+        logger.error("fetch_evidence_record_schema error: {}\n".format(e))
+        return vo.RecordSchemaListVO(error="Facing internal error")       
+
 @mcp.tool()
 async def fetch_available_control_actions(assessmentName: str, controlNumber: str = "", controlAlias: str = "", evidenceName: str = "") -> vo.RecordListVO:
     """
@@ -583,6 +637,15 @@ async def fetch_available_control_actions(assessmentName: str, controlNumber: st
         for item in output.get("items", []):
             if not item.get("actionBindingID"):
                 continue
+            rules = item.get("rules", [])
+            if rules and isinstance(rules, list):
+                rule_inputs = rules[0].get("ruleInputs", {})
+                filtered_inputs = {
+                    key: value for key, value in rule_inputs.items()
+                    if not key.endswith("__")
+                }
+                item["ruleInputs"] = filtered_inputs
+
             item.pop("rules", None)
             actions.append(vo.ActionsVO.model_validate(item))
         
@@ -626,6 +689,15 @@ async def fetch_assessment_available_actions(name: str = "") -> vo.RecordListVO:
         for item in output.get("items", []):
             if not item.get("actionBindingID"):
                 continue
+            rules = item.get("rules", [])
+            if rules and isinstance(rules, list):
+                rule_inputs = rules[0].get("ruleInputs", {})
+                filtered_inputs = {
+                    key: value for key, value in rule_inputs.items()
+                    if not key.endswith("__")
+                }
+                item["ruleInputs"] = filtered_inputs
+
             item.pop("rules", None)
             actions.append(vo.ActionsVO.model_validate(item))
         
@@ -635,7 +707,7 @@ async def fetch_assessment_available_actions(name: str = "") -> vo.RecordListVO:
         logger.error("fetch_assessment_available_actions error: {}\n".format(e))
         return vo.ActionsListVO(error="Facing internal error")
     
-    
+
 @mcp.tool()
 async def fetch_evidence_available_actions(assessment_name: str = "", control_number: str="", control_alias: str ="", evidence_name: str ="") -> vo.ActionsListVO:
     """
@@ -677,6 +749,15 @@ async def fetch_evidence_available_actions(assessment_name: str = "", control_nu
         for item in output.get("items", []):
             if not item.get("actionBindingID"):
                 continue
+            rules = item.get("rules", [])
+            if rules and isinstance(rules, list):
+                rule_inputs = rules[0].get("ruleInputs", {})
+                filtered_inputs = {
+                    key: value for key, value in rule_inputs.items()
+                    if not key.endswith("__")
+                }
+                item["ruleInputs"] = filtered_inputs
+
             item.pop("rules", None)
             actions.append(vo.ActionsVO.model_validate(item))
         
@@ -685,7 +766,61 @@ async def fetch_evidence_available_actions(assessment_name: str = "", control_nu
     except Exception as e:
         logger.error("fetch_evidence_available_actions error: {}\n".format(e))
         return vo.ActionsListVO(error="Facing internal error")
-    
+
+@mcp.tool()
+async def fetch_general_available_actions(type: str = "") -> vo.ActionsListVO:
+    """
+        Get general actions available on assessment, control & evidence. 
+        Once fetched, ask user to confirm to execute the action, then use 'execute_action' tool with appropriate parameters to execute the action.
+        For inputs use default value as sample, based on that generate the inputs for the action.
+        Args: 
+            - type (str): Type of the action, can be "assessment", "control" or "evidence".
+
+        Returns:
+            - actions (List[ActionsVO]): List of actions
+                - actionName (str):  Action name.
+                - actionDescription (str): Action description.
+                - actionSpecID (str): Action specific id.
+                - actionBindingID (str): Action binding id.
+                - target (str):  Target.
+                - ruleInputs: Optional[dict[str, Any]]: Rule inputs for the action, if applicable.
+            - error (Optional[str]): An error message if any issues occurred during retrieval.
+    """
+    try:
+        output=await utils.make_API_call_to_CCow({
+            "actionType":"action",
+            "targetType" : type,
+            "isRulesReq":True,
+            "triggerType":"userAction"
+        },constants.URL_FETCH_AVAILABLE_ACTIONS)
+        logger.debug("output: {}\n".format(json.dumps(output)))
+
+        if isinstance(output, str) or  "error" in output:
+            logger.error("fetch_evidence_available_actions error: {}\n".format(output))
+            return vo.ActionsListVO(error="Facing internal error")
+                
+        actions: List[vo.ActionsVO] = []
+        for item in output.get("items", []):
+            if not item.get("actionBindingID"):
+                continue
+            rules = item.get("rules", [])
+            if rules and isinstance(rules, list):
+                rule_inputs = rules[0].get("ruleInputs", {})
+                filtered_inputs = {
+                    key: value for key, value in rule_inputs.items()
+                    if not key.endswith("__")
+                }
+                item["ruleInputs"] = filtered_inputs
+
+            item.pop("rules", None)
+            actions.append(vo.ActionsVO.model_validate(item))
+        
+        logger.debug("output: {}\n".format(vo.ActionsListVO(actions=actions).model_dump()))
+        return vo.ActionsListVO(actions=actions)
+    except Exception as e:
+        logger.error("fetch_evidence_available_actions error: {}\n".format(e))
+        return vo.ActionsListVO(error="Facing internal error")
+     
 @mcp.tool()
 async def fetch_automated_controls_of_an_assessment(assessment_id: str = "") -> vo.AutomatedControlListVO:
     
@@ -742,11 +877,13 @@ async def fetch_automated_controls_of_an_assessment(assessment_id: str = "") -> 
 
 
 @mcp.tool()
-async def execute_action(assessmentId: str, assessmentRunId: str, actionBindingId: str , assessmentRunControlId: str="", assessmentRunControlEvidenceId: str="", evidenceRecordIds: List[str]=[] ) -> vo.TriggerActionVO:
+async def execute_action(assessmentId: str, assessmentRunId: str, actionBindingId: str , assessmentRunControlId: str="", assessmentRunControlEvidenceId: str="", evidenceRecordIds: List[str]=[], inputs: dict[str, any] = None) -> vo.TriggerActionVO:
     """
         Use this tool when the user asks about actions such as create, update or other action-related queries.
 
         IMPORTANT: This tool MUST ONLY be executed after explicit user confirmation. 
+        Always prompt for REQUIRED-FROM-USER field from user and get inputs from user.
+        Always confirm the inputs below execute action.
         Always describe the intended action and its effects to the user, then wait for their explicit approval before proceeding.
         Do not execute this tool without clear user consent, as it performs actual operations that modify system state.
 
@@ -757,6 +894,8 @@ async def execute_action(assessmentId: str, assessmentRunId: str, actionBindingI
         Only once action can be triggered at a time, assessment level or control level or evidence level based on user preference.
         Use this to trigger action for assessment level or control level or evidence level.
         Please also provide the intended effect when executing actions.
+        For inputs use default value as sample, based on that generate the inputs for the action. Format key - inputName value - inputValue.
+        If inputs are provided, Always ensure to show all inputs to the user before executing the action, and also user to make changes to the inputs and also confirm modified inputs before executing the action.
 
         WORKFLOW:
         1. First fetch the available actions based on user preference assessment level or control level or evidence level
@@ -773,20 +912,35 @@ async def execute_action(assessmentId: str, assessmentRunId: str, actionBindingI
             - assessmentRunControlId - needed for control level action
             - assessmentRunControlEvidenceId - needed for evidence level action
             - evidenceRecordIds - needed for evidence level action
+            - inputs (Optional[dict[str, any]]): Additional inputs for the action, if required by the action's rules.
         
         Returns:
             - id (str): id of triggered action.
     """
     try:
-        output=await utils.make_API_call_to_CCow({
+        input_dict = {}
+        if inputs:
+            input_dict = {
+                key: {
+                    "name": key,
+                    "value": value
+                }
+                for key, value in inputs.items()
+            }
+        
+        req_body = {
             "actionBindingID": actionBindingId,
             "planInstanceID":assessmentRunId,
             "planID": assessmentId,
             "planInstanceControlID": assessmentRunControlId,
             "planInstanceControlEvidenceID": assessmentRunControlEvidenceId,
             "recordIDs": evidenceRecordIds,
-            "rules":[]
-        },constants.URL_ACTIONS_EXECUTIONS)
+            "actionInputs": input_dict
+        }
+
+        logger.debug("execute_action request body: {}\n".format(json.dumps(req_body)))
+
+        output=await utils.make_API_call_to_CCow(req_body,constants.URL_ACTIONS_EXECUTIONS)
         logger.debug("output: {}\n".format(json.dumps(output)))
 
         if isinstance(output, str) or  "error" in output:
