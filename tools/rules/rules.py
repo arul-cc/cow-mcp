@@ -507,7 +507,7 @@ def confirm_template_input(rule_name: str, task_name: str, input_name: str, conf
             return {"success": True, "task_name": task_name, "input_name": input_name, "stored_content": confirmed_content, "content_size": len(confirmed_content), "storage_type": "MEMORY", "data_type": task_input.dataType, "format": task_input.format, "timestamp": datetime.now().isoformat(), "message": f"Template content stored in memory for {input_name} in {task_name}"}
 
     except Exception as e:
-        return {"success": False, "error": f"Failed to confirm template input: {str(e)}"}
+        return {"success": False, "error": f"Failed to confirm template input: {e}"}
 
 
 @mcp.tool()
@@ -1685,7 +1685,7 @@ def create_design_notes(rule_name: str, design_notes_structure: Dict[str, Any]) 
     except Exception as e:
         return {
             "success": False,
-            "error": f"Failed to save design notes: {str(e)}",
+            "error": f"Failed to save design notes: {e}",
             "rule_name": rule_name
         }
 
@@ -1729,7 +1729,7 @@ def fetch_rule(rule_name: str,include_read_me: bool = False) -> Dict[str, Any]:
     except Exception as e:
         return {
             "success": False,
-            "error": f"Failed to fetch rule '{rule_name}': {str(e)}",
+            "error": f"Failed to fetch rule '{rule_name}': {e}",
             "rule_name": rule_name
         }
 
@@ -2104,7 +2104,7 @@ def create_rule_readme(rule_name: str, readme_content: str) -> Dict[str, Any]:
     except Exception as e:
         return {
             "success": False,
-            "error": f"Failed to save README.md: {str(e)}",
+            "error": f"Failed to save README.md: {e}",
             "rule_name": rule_name
         }
 
@@ -2159,7 +2159,7 @@ def update_rule_readme(rule_name: str, updated_readme_content: str) -> Dict[str,
     except Exception as e:
         return {
             "success": False,
-            "error": f"Failed to update README.md: {str(e)}",
+            "error": f"Failed to update README.md: {e}",
             "rule_name": rule_name
         }
 
@@ -2484,7 +2484,8 @@ def get_application_info(tag_name: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[Dict[str, Any]], applications: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """RULE EXECUTION WORKFLOW:
+    """
+    RULE EXECUTION WORKFLOW:
 
     PREREQUISITE STEPS:
     1. User chooses to execute rule after creation
@@ -2502,12 +2503,16 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
             }
         ]
         ```
-        - If new: get_application_info(tag_name) → collect credentials + get application URL from user (optional) → confirm → move to next tag
+        - If new: 
+            a. get_application_info(tag_name) → present credential types
+            b. collect credentials for chosen type → get user confirmation
+            c. ask for application URL: "Application URL for {appType} (optional - press Enter to skip):"
+            d. confirm complete configuration → move to next tag
         ```json
         [
             {
                 "applicationType": "[appType (split by :: and use the first value)]",
-                "appURL": "[Application URL from user (optional)]",
+                "appURL": "[Application URL from user (optional - can be empty string)]",
                 "credentialType": "[User chosen credential type]",
                 "credentialValues": {
                     "[User provided credentials]"
@@ -2523,6 +2528,14 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
         - To Date (format: YYYY-MM-DD) - optional
     6. Final confirmation → execute rule
     7. If execution starts successfully → call fetch_execution_progress()
+    8. Rule Output File Display Process:
+        a. Extract task outputs from execution results
+        b. MANDATORY: Show output in this format:
+            - TaskName: [task_name]
+            - Files: [list of files]
+        c. Ask: "View file contents? (yes/no)"
+        d. If yes: Call fetch_output_file() for each requested file
+        e. Display results with formatting
 
     Args:
         rule_name: Rule to execute
@@ -2644,7 +2657,8 @@ def fetch_execution_progress(rule_name: str, execution_id: str) -> Dict[str, Any
                 "type": entry.get("type", "Unknown"),
                 "status": entry.get("status", "PENDING"),
                 "progressPercentage": entry.get("progressPercentage", 0),
-                "error": entry.get("error")
+                "error": entry.get("error"),
+                "outputs": entry.get("outputs")
             }
         
         return [task_states[tid] for tid in task_order]
@@ -2683,7 +2697,6 @@ def fetch_execution_progress(rule_name: str, execution_id: str) -> Dict[str, Any
         overall_status = exec_progress_resp.get("status", "PENDING")
         task_summary = exec_progress_resp.get("taskProgressSummary", {})
         progress_array = exec_progress_resp.get("progress", [])
-        outputs = exec_progress_resp.get("outputs", [])
         
         # Consolidate tasks to current state
         consolidated_tasks = consolidate_task_progress(progress_array)
@@ -2706,7 +2719,8 @@ def fetch_execution_progress(rule_name: str, execution_id: str) -> Dict[str, Any
                 "task_type": task['type'],
                 "progress_bar": progress_bar,
                 "percentage": percentage,
-                "status": status
+                "status": status,
+                "outputs": task.get("outputs")
             }
             
             if status == "ERROR" and task.get("error"):
@@ -2757,10 +2771,8 @@ def fetch_execution_progress(rule_name: str, execution_id: str) -> Dict[str, Any
                 "final_status": overall_status,
                 "total_tasks": len(consolidated_tasks),
                 "successful_tasks": task_stats["COMPLETED"],
-                "failed_tasks": task_stats["ERROR"],
-                "outputs": outputs
+                "failed_tasks": task_stats["ERROR"]
             }
-            response["outputs"] = outputs
             response["display_header"] = f"✅ **Execution Complete** - {rule_name}" if overall_status == "COMPLETED" else f"❌ **Execution Failed** - {rule_name}"
         
         return response
@@ -2773,9 +2785,8 @@ def fetch_execution_progress(rule_name: str, execution_id: str) -> Dict[str, Any
             "execution_id": execution_id,
             "error": str(e),
             "display_header": "❌ **Error Fetching Progress**",
-            "display_lines": [{"text": f"Error: {str(e)}"}]
+            "display_lines": [{"text": f"Error: {e}"}]
         }
-
 
 
 @mcp.tool()
@@ -2837,4 +2848,106 @@ def create_support_ticket(subject: str, description: str, priority: str) -> Dict
     except Exception as e:
         return {
             "error": f"An error occurred while creating the support ticket: {e}"
+        }
+    
+
+@mcp.tool()
+def fetch_output_file(file_url: str) -> Dict[str, Any]:
+    """Fetch and display content of an output file from rule execution.
+
+    FILE OUTPUT HANDLING:
+
+    WHEN TO USE:
+    - Rule execution output contains file URLs
+    - User requests to view specific file content
+    - Files contain reports, logs, compliance data, or analysis results
+
+    CONTENT DISPLAY LOGIC:
+    - If file size < 1KB: Show entire file content
+    - If file size >= 1KB: Show only first 3 records/lines with user-friendly message
+    - Supported formats: JSON, CSV, Parquet, and other text files
+    - Always return file format extracted from filename
+    - Provide clear user messaging about content truncation
+    - CRITICAL: If content is truncated or full content, include truncation message with the display_content
+
+    MANDATORY CONTENT DISPLAY FORMAT:
+    - FileName: [extracted from file_url]
+    - Format: [file format from file_format]
+    - User Message: [truncation status or completion message if applicable user_message]  
+    - Content: [display_content based on file format show the entire display_content]
+
+    Args:
+        file_url: URL of the file to fetch and display
+
+    Returns:
+        Dict containing file content, metadata, and display information
+    """
+    try:
+        # Fetch file from API
+        headers = wsutils.create_header()
+        payload = {"fileURL": file_url}
+        response = wsutils.post(
+            path=wsutils.build_api_url(endpoint=constants.URL_FETCH_FILE), 
+            data=json.dumps(payload), 
+            header=headers
+        )
+
+        file_content = response.get("fileContent", "")
+        filename = response.get("fileName", "")
+        
+        # Get file format
+        file_format = filename.split('.')[-1].lower() if '.' in filename else "unknown"
+        if file_format == "pq": file_format = "parquet"
+
+        # Decode content and calculate size
+        try:
+            if file_format == "parquet":
+                actual_content = file_content  # Keep base64 for parquet
+                file_size_bytes = len(base64.b64decode(file_content))
+            else:
+                actual_content = base64.b64decode(file_content).decode('utf-8')
+                file_size_bytes = len(actual_content.encode('utf-8'))
+        except:
+            actual_content = file_content
+            file_size_bytes = len(file_content.encode('utf-8'))
+
+        file_size_kb = file_size_bytes / 1024
+        
+        # Process content - all preview functions now handle size logic internally
+        if file_format == "parquet":
+            display_content, info = rule.get_parquet_preview(actual_content, file_size_kb)
+            user_message = f"📊 Parquet file ({file_size_kb:.2f}KB). {info}"
+        elif file_format == "json":
+            display_content, info = rule.get_json_preview(actual_content, file_size_kb)
+            user_message = f"📄 JSON file ({file_size_kb:.2f}KB). {info}"
+        elif file_format in ["csv", "tsv"]:
+            display_content, info = rule.get_csv_preview(actual_content, file_size_kb)
+            user_message = f"📊 {file_format.upper()} file ({file_size_kb:.2f}KB). {info}"
+        else:
+            # For other text files
+            lines = actual_content.split('\n')
+            if file_size_kb < 1.0:
+                display_content = actual_content
+                user_message = f"✅ Complete file ({file_size_kb:.3f}KB)"
+            else:
+                display_content = '\n'.join(lines[:3])
+                if len(lines) > 3:
+                    display_content += "\n... (truncated)"
+                user_message = f"📄 File ({file_size_kb:.2f}KB). Showing first 3 of {len(lines)} lines"
+
+        return {
+            "success": True,
+            "file_url": file_url,
+            "filename": filename,
+            "file_format": file_format,
+            "file_size_kb": round(file_size_kb, 2),
+            "display_content": display_content,
+            "user_message": user_message
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "file_url": file_url,
+            "error": f"Failed to fetch file: {e}"
         }

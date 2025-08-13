@@ -2,8 +2,9 @@ import base64
 import json
 import re
 from datetime import datetime
-from io import StringIO
+from io import BytesIO, StringIO
 from typing import Any, Dict, List, Union
+import pandas as pd
 
 import toml
 from ruamel.yaml import YAML
@@ -604,7 +605,7 @@ def create_rule_api(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
 
 def fetch_rule(rule_name: str, include_read_me: bool = False) -> Dict[str, Any]:
     params = {
-        name:rule_name
+        "name":rule_name
     }
     if include_read_me:
         params={**params,"include_read_me" : "true"}
@@ -688,3 +689,102 @@ def create_support_ticket_api(body: Dict[str, Any] = None ) -> List[SimplifiedRu
         return {**ticket_detials, "status": "created", "message": "Ticket created successfully Created ", "timestamp": datetime.now().isoformat()}
     except Exception as e:
         return {"error": f"Failed to fetch support ticket categories: {e}"}
+    
+def get_json_preview(content: str, max_records: int = 4) -> tuple[str, str]:
+    """Extract preview of JSON content showing first N records."""
+    try:
+        data = json.loads(content)
+        
+        if isinstance(data, list):
+            total = len(data)
+            # Show all if file < 1KB OR only 1 record
+            if file_size_kb < 1.0 or total <= 1:
+                preview_json = json.dumps(data, indent=2)
+                return preview_json, f"All {total} records shown"
+            else:
+                # Show first 3 records for large files with multiple records
+                preview = data[:3]
+                preview_json = json.dumps(preview, indent=2)
+                if total > 3:
+                    preview_json += "\n... (truncated)"
+                return preview_json, f"Showing first 3 of {total} records"
+                
+        elif isinstance(data, dict):
+            # Single object - always show complete for < 1KB, check arrays for >= 1KB
+            if file_size_kb < 1.0:
+                preview_json = json.dumps(data, indent=2)
+                return preview_json, "Complete object shown"
+            else:
+                # For large files, truncate arrays to 3 items
+                preview_data = {}
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 3:
+                        preview_data[key] = value[:3]
+                    else:
+                        preview_data[key] = value
+                
+                preview_json = json.dumps(preview_data, indent=2)
+                return preview_json, "Object shown (arrays truncated to 3 items)"
+        else:
+            # Single value - always show complete
+            return json.dumps(data, indent=2), "Single value"
+            
+    except:
+        lines = content.split('\n')
+        if file_size_kb < 1.0:
+            return content, f"All {len(lines)} lines"
+        else:
+            preview = '\n'.join(lines[:3])
+            return preview, f"First 3 of {len(lines)} lines"
+
+def get_csv_preview(content: str, file_size_kb: float) -> tuple[str, str]:
+    """Extract preview of CSV content. Shows all if < 1KB or only 1 record, header + first 3 if >= 1KB with multiple records."""
+    lines = [line for line in content.split('\n') if line.strip()]
+    
+    if not lines:
+        return content, "Empty file"
+    
+    total_data_rows = len(lines) - 1  # Exclude header
+    
+    # Show all if file < 1KB OR only 1 data record
+    if file_size_kb < 1.0 or total_data_rows <= 1:
+        preview_content = '\n'.join(lines)
+        return preview_content, f"Header + all {total_data_rows} records shown"
+    else:
+        # Show header + first 3 data rows for large files with multiple records
+        if total_data_rows > 3:
+            # More than 3 data rows - show header + first 3 data rows
+            preview_lines = lines[:4]  # Header + 3 data rows
+            preview_content = '\n'.join(preview_lines)
+            preview_content += "\n... (truncated)"
+            return preview_content, f"Header + first 3 of {total_data_rows} records"
+        else:
+            # 2 or 3 data rows - show all
+            preview_content = '\n'.join(lines)
+            return preview_content, f"Header + all {total_data_rows} records shown"
+
+def get_parquet_preview(content: str, file_size_kb: float) -> tuple[str, str]:
+    """Decode base64 Parquet content. Shows all if < 1KB or only 1 record, first 3 if >= 1KB with multiple records."""
+    try:
+        decoded_bytes = base64.b64decode(content)
+        df = pd.read_parquet(BytesIO(decoded_bytes))
+        
+        total = len(df)
+        
+        # Show all if file < 1KB OR only 1 record
+        if file_size_kb < 1.0 or total <= 1:
+            preview_json = df.to_json(orient="records", indent=2)
+            return preview_json, f"All {total} records shown"
+        else:
+            # Show first 3 records for large files with multiple records
+            if total > 3:
+                preview_df = df.head(3)
+                preview_json = preview_df.to_json(orient="records", indent=2)
+                preview_json += "\n... (truncated)"
+                return preview_json, f"First 3 of {total} records shown"
+            else:
+                preview_json = df.to_json(orient="records", indent=2)
+                return preview_json, f"All {total} records shown"
+        
+    except Exception as e:
+        return f"Error processing Parquet: {e}", "Processing failed"
