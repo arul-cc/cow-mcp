@@ -1284,12 +1284,12 @@ def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
             purpose: Clear statement based on user breakdown
             description: Detailed description combining all steps
             labels:
-            appType: [PRIMARY_APP_TYPE_FROM_STEP_1] # Single value array
-            environment: [logical] # Array
-            execlevel: [app] # Array
+                appType: [PRIMARY_APP_TYPE_FROM_STEP_1] # Single value array
+                environment: [logical] # Array
+                execlevel: [app] # Array
             annotations:
-            annotateType: [PRIMARY_APP_TYPE_FROM_STEP_1] # Same as appType
-            app: [PRIMARY_APP_TYPE_FROM_STEP_1] # Same as appType
+                annotateType: [PRIMARY_APP_TYPE_FROM_STEP_1] # Same as appType
+            app: application_class_name from fetch_applications(PRIMARY_APP_TYPE_FROM_STEP_1) # MANDATORY - single string value
         spec:
             inputs:
               InputName: [ACTUAL_USER_VALUE_OR_FILE_URL]  # Use original or unique names based on conflicts
@@ -1310,12 +1310,16 @@ def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
               type: task
               appTags:
                 appType: [COPY_FROM_TASK_DEFINITION] # Keep original task appType
+                environment: [logical] # Array
+                execlevel: [app] # Array
               purpose: What this task does for Step 1
             - name: Step2TaskName
               alias: validation # Another meaningful alias
               type: task
               appTags:
                 appType: [COPY_FROM_TASK_DEFINITION]
+                environment: [logical] # Array
+                execlevel: [app] # Array
               purpose: What this task does for validation
             ioMap:
             - step1.Input.TaskInput:=*.Input.InputName  # Use task aliases in I/O mapping
@@ -2642,9 +2646,9 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
         ```json
         [
             {
-                "applicationType": "[appType (split by :: and use the first value)]",
+                "applicationType": "[application_class_name from fetch_applications(appType)]",
                 "applicationId": "[Actual ID]",
-                "appTags": "[Complete object from rule spec.tasks.appTags]"
+                "appTags": "[Complete object from rule spec.tasks[].appTags]"
             }
         ]
         ```
@@ -2656,13 +2660,13 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
         ```json
         [
             {
-                "applicationType": "[appType (split by :: and use the first value)]",
+                "applicationType": "[application_class_name from fetch_applications(appType)]",
                 "appURL": "[Application URL from user (optional - can be empty string)]",
                 "credentialType": "[User chosen credential type]",
                 "credentialValues": {
                     "[User provided credentials]"
                 },
-                "appTags": "[Complete object from rule spec.tasks.appTags]"
+                "appTags": "[Complete object from rule spec.tasks[].appTags]"
             }
         ]
         ```
