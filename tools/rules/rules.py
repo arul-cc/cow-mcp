@@ -11,6 +11,8 @@ from mcpconfig.config import mcp
 from mcptypes import exception
 from mcptypes.rule_type import TaskVO
 from utils import rule, wsutils
+import mcptypes.rule_type as vo
+from utils.debug import logger
 
 # Phase 1: Lightweight task summary resource
 
@@ -1802,7 +1804,74 @@ def fetch_rule(rule_name: str,include_read_me: bool = False) -> Dict[str, Any]:
             "error": f"Failed to fetch rule '{rule_name}': {e}",
             "rule_name": rule_name
         }
+    
+@mcp.tool()
+def fetch_cc_rule_by_name(rule_name: str) -> Dict[str, Any]:
+    """
+    Fetch rule details by rule name from the **compliancecow**.
 
+    Args:
+        rule_name: Rule name of the rule to retrieve
+        
+    Returns:
+        Dict containing complete rule structure and metadata
+    """
+    
+    try:
+
+        rule_response = rule.fetch_cc_rule_by_name(rule_name)
+        logger.debug(f"fetch_cc_rule_by_name: rule_output: {rule_response}\n")
+
+        if len(rule_response) == 0:
+            return {
+                "success": False,
+                "rule_name": rule_name,
+                "error": f"Rule '{rule_name}' not found in ComplianceCow. This means the rule is not published or does not exist in ComplianceCow.",
+                "next_actions": ["publish_rule", "cancel"]
+            }
+
+        return rule_response
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to fetch rule with id '{rule_name}': {str(e)}",
+            "rule_name": rule_name
+        }
+
+@mcp.tool()
+def fetch_cc_rule_by_id(rule_id: str) -> Dict[str, Any]:
+    """
+    Fetch rule details by rule id from the **compliancecow**.
+
+    Args:
+        rule_id: Rule Id of the rule to retrieve
+        
+    Returns:
+        Dict containing complete rule structure and metadata
+    """
+    
+    try:
+
+        rule_response = rule.fetch_cc_rule_by_id(rule_id)
+        logger.debug(f"fetch_cc_rule_by_id: rule_output: {rule_response}\n")
+
+        if len(rule_response) == 0:
+            return {
+                "success": False,
+                "rule_id": rule_id,
+                "error": f"Rule '{rule_id}' not found in ComplianceCow. This means the rule is not published or does not exist in ComplianceCow.",
+                "next_actions": ["publish_rule", "cancel"]
+            }
+
+        return rule_response
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to fetch rule with id '{rule_id}': {str(e)}",
+            "rule_id": rule_id
+        }
 
 @mcp.tool()
 def fetch_rule_design_notes(rule_name: str) -> Dict[str,Any]:
@@ -2343,8 +2412,16 @@ def get_rules_summary() -> Dict[str, Any]:
 
     WHEN TO USE:
     - As the first step before initiating a new rule creation process
-    - When the user wants to retrieve and review all available rules
+    - When the user wants to retrieve and review all available rules in the **catalog**
     - When verifying if a similar rule already exists that can be reused or customized
+
+    🚫 DO NOT USE THIS TOOL FOR:
+    - Checking what rules are available in the ComplianceCow system.
+    - This tool only works with the **rule catalog** (not the entire ComplianceCow system).
+    - The catalog contains only rules that are published and available for reuse in the catalog.
+    - For direct ComplianceCow system lookups, use dedicated system tools instead:
+    - `fetch_cc_rule_by_name`
+    - `fetch_cc_rule_by_id`
 
     WHAT IT DOES:
     - Retrieves the full list of rules from the catalog with simplified metadata (name, purpose, description)
@@ -2375,13 +2452,11 @@ def get_rules_summary() -> Dict[str, Any]:
         - If the README content does not match or is not suitable, clearly inform the user and recommend either modifying the logic significantly or proceeding with a completely new rule from scratch
 
     IF NO SUITABLE RULE IS FOUND:
-
     - Clearly informs the user that no relevant rule matches the proposed use case
     - Suggests continuing with new rule creation
     - Optionally highlights similar rules that can be used as a reference
 
     MANDATORY STEPS:
-
     README VALIDATION:
     - Always retrieve and analyze `readmeData` from `fetch_rule()`.
     - Ensure the rule's logic, behavior, and intended use align with the user's proposed use case.
@@ -3127,10 +3202,16 @@ def check_applications_publish_status(app_info: List[Dict]) -> Dict[str, Any]:
 def check_rule_publish_status(rule_name: str) -> Dict[str, Any]:
     """
     Check if a rule is already published.
-    
+
+    - If not published → publish the rule so it becomes available for control attachment  
+    - Once published, prompt the user:  
+      "Do you want to attach this rule to a ComplianceCow control? (yes/no)"  
+    - If yes → ask for assessment name and control alias to proceed with association  
+    - If no → end workflow  
+
     Args:
         rule_name: Name of the rule to check
-        
+
     Returns:
         Dict with publication status and details
     """
@@ -3327,11 +3408,11 @@ def publish_rule(rule_name: str, cc_rule_name: str = None) -> Dict[str, Any]:
     - Call publish_rule() with confirmed name
     - Inform user: "Published successfully" or "Publication failed"
 
-    8. Rule Association (optional):
-    - Ask user: "Do you want to attach this rule to ComplianceCow control? (yes/no)"
-    - If yes: Call attach_rule_to_control() to associate the rule
-    - If no: End workflow
-    
+    8. Rule Association:
+        - Publishes the rule to make it available for control attachment
+        - Ask user: "Do you want to attach this rule to a ComplianceCow control? (yes/no)"
+        - If yes: Proceed to associate the rule with control and request assessment name and control alias from the user
+        - If no: End workflow
 
     EXECUTION CONTROL MECHANISMS:
     - STEP GATE: Each step requires completion before next
@@ -3388,3 +3469,295 @@ def publish_rule(rule_name: str, cc_rule_name: str = None) -> Dict[str, Any]:
             "rule_info": []
         }
     
+
+
+@mcp.tool()
+def fetch_assessments(categoryId: str = "", categoryName: str = "", assessmentName: str = "") -> vo.AssessmentListVO:
+    """
+    Fetch the list of available assessments in ComplianceCow.  
+
+    TOOL PURPOSE:
+    - Retrieves a list of available assessments if no specific match is provided.  
+    - Returns only basic assessment info (id, name, category) without the full control hierarchy.  
+    - Used to confirm the assessment name while attaching a rule to a specific control.  
+
+    Args:
+        categoryId (Optional[str]): Assessment category ID.  
+        categoryName (Optional[str]): Assessment category name.  
+        assessmentName (Optional[str]): Assessment name.  
+
+    Returns:
+        - assessments (List[Assessments]): A list of assessment objects, each containing:  
+            - id (str): Unique identifier of the assessment.  
+            - name (str): Name of the assessment.  
+            - category_name (str): Name of the category.  
+        - error (Optional[str]): An error message if any issues occurred during retrieval.  
+    """
+    try:
+        params = {
+            "fields": "basic",
+            "category_id": categoryId,
+            "category_name_contains": categoryName,
+            "name_contains": assessmentName
+        }
+
+        assessments = rule.get_assessments(params)
+        logger.debug("assessment_output: {}\n".format(assessments))
+        return assessments
+
+    except Exception:
+        return vo.AssessmentListVO(error="Facing internal error")
+
+@mcp.tool()
+def fetch_leaf_controls_of_an_assessment(assessment_id: str = "") -> Any:
+    """
+    To fetch the only the **leaf controls** for a given assessment.
+    If assessment_id is not provided use other tools to get the assessment and its id.
+    
+    Args:
+        - assessment_id (str, required): Assessment id or plan id.
+
+    Returns:
+        - controls (List[AutomatedControlVO]): List of controls
+            - id (str): Control ID.
+            - displayable (str): Displayable name or label.
+            - alias (str): Alias of the control.
+            - activationStatus (str): Activation status.
+            - ruleName (str): Associated rule name.
+            - assessmentId (str): Assessment identifier.
+        - error (Optional[str]): An error message if any issues occurred during retrieval.
+    """
+    try:
+        params = {
+            "fields": "basic",
+            "skip_prereq_ctrl_priv_check": "false",
+            "page": 1,
+            "page_size": 100,
+            "plan_id": assessment_id,
+            "is_leaf_control":True
+        }
+       
+        leaf_controls = rule.get_assessment_controls(params)
+        logger.debug(f"leaf_controls_output: {leaf_controls}\n")
+        
+        if isinstance(leaf_controls, list):
+            return leaf_controls
+        else:
+            return {"error": "Failed to fetch leaf controls"}
+    except Exception as e:
+        return  {"error": "Failed to fetch leaf controls"}
+
+    
+@mcp.tool()
+def verify_control_in_assessment(assessment_name: str, control_alias: str) -> Dict[str, Any]:
+    """
+    Verify the existence of a specific control by alias within an assessment and confirm it is a leaf control.
+
+    CONTROL VERIFICATION AND VALIDATION:
+    - Confirms the control with the specified alias exists in the given assessment.
+    - Validates that the control is a leaf control (eligible for rule attachment).
+    - Checks if a rule is already attached to the control.
+    - Returns control details and attachment status.
+
+    LEAF CONTROL IDENTIFICATION:
+    - A control is considered a leaf control if:
+    - leafControl = true, OR
+    - has no planControls array, OR
+    - planControls array is empty.
+    - Only leaf controls can have rules attached.
+    - If the control is not a leaf control, an error will be returned.
+
+    Args:
+        assessment_name: Name of the assessment.
+        control_alias: Alias of the control to verify.
+
+    Returns:
+        Dict containing control details, leaf status, and rule attachment info.
+    """
+   
+    try:
+
+        assessment_params = {
+            "fields": "basic",
+            "skip_prereq_ctrl_priv_check": "false",
+            "name": assessment_name,
+            "is_leaf_control":True
+        }
+        
+        assessments = rule.get_assessments(assessment_params)
+        logger.debug("assessment_output_for_control_checking: {}\n".format(assessments))
+
+        if len(assessments) == 0:
+            return {"error":f"The requested assessment named {assessment_name} was not found."}
+        
+        assessment = assessments[0]
+
+        control_params = {
+            "fields": "basic",
+            "skip_prereq_ctrl_priv_check": "false",
+            "page_size": 500,
+            "plan_id": assessment.id,
+            "is_leaf_control":True
+        }
+
+        leaf_controls = rule.get_assessment_controls(control_params)
+
+        if not leaf_controls or not isinstance(leaf_controls, list):
+            return {"error": f"No leaf controls found for assessment '{assessment_name}'."}
+        logger.debug(f"leaf_controls_output: {leaf_controls}\n")
+
+        for control in leaf_controls:
+            if str(control.alias) == control_alias:
+                if control.ruleId:
+                     return {
+                        "success": True,
+                        "assessment_name": assessment_name,
+                        "control_alias": control_alias,
+                        "control_info": control,
+                        "warning": f"Control '{control_alias}' already has a rule attached (Rule ID: {control.ruleId})",
+                        "message": f"Control found but already has rule attached. Options: 1) View existing rule details, 2) Override with new rule attachment",
+                        "next_actions": ["view_existing_rule", "override_attachment", "cancel"]
+                    }
+
+                return {
+                    "success": True,
+                    "assessment_name": assessment_name,
+                    "control_alias": control_alias,
+                    "control_info": control,
+                    "message": f"Leaf control '{control_alias}' found and available for rule attachment.",
+                    "ready_for_attachment": True
+                }
+            
+        return {
+            "success": False,
+            "assessment_name": assessment_name,
+            "control_alias": control_alias,
+            "control_info": control,
+            "error": f"Control alias '{control_alias}' was not found as a leaf control in assessment '{assessment_name}'.",
+            "message": f"The control alias '{control_alias}' is either not present or is not a leaf control in the specified assessment '{assessment_name}'. Please make sure you provide a valid, available leaf control alias.",
+            "next_actions": ["retry_with_valid_leaf_control", "cancel"]
+        }
+                
+    except Exception as e:
+        return {
+            "success": False,
+            "assessment_name": assessment_name,
+            "control_alias": control_alias,
+            "error": f"Failed to find control: {str(e)}",
+            "message": f"Error occurred while searching for the control **'{control_alias}'** in assessment **'{assessment_name}'**."
+        }
+
+
+@mcp.tool()
+def attach_rule_to_control(rule_id: str, assessment_name: str, control_alias: str, control_id: str,create_evidence: bool = True ) -> Dict[str, Any]:
+
+    """
+    Attach a rule to a specific control in an assessment.
+
+    🚨 CRITICAL EXECUTION BLOCKERS — DO NOT SKIP 🚨
+    Before **any** part of this tool can run, five preconditions MUST be met:
+
+    1. Control Verification:
+    - You MUST verify the control exists in the assessment by calling `verify_control_in_assessment()`.
+    - Verification must confirm the control is present, valid, and a leaf control.
+    - If verification fails → STOP immediately. Do not proceed.
+
+    2. Rule ID Resolution:
+    - If `rule_id` is a valid UUID → proceed.
+    - If `rule_id` is an alphabetic string → treat it as the rule name and resolve it to a UUID **using `fetch_cc_rule_by_name()`**.
+    - If resolution fails or `rule_id` is still not a UUID after this step → STOP immediately.
+    - Execution is STRICTLY PROHIBITED with a plain name.
+
+    3. Rule Publish Validation:
+    - You MUST check if the rule is published in ComplianceCow before proceeding.
+    - If the rule is not published → STOP immediately.  
+    - Published status is a hard requirement for attachment.
+
+    4. Evidence Creation Acknowledgment:
+    - Before proceeding, you MUST request confirmation from the user about `create_evidence`.
+    - Ask: "Do you want to auto-generate evidence from the rule output? (default: True)"
+    - Only proceed after the user explicitly acknowledges their choice.
+
+    5. Override Acknowledgment:
+    - If the control already has a rule attached, you MUST request user confirmation before overriding.
+    - Ask: "This control already has a rule attached. Do you want to override it? (yes/no)"
+    - Only proceed if the user explicitly confirms.
+
+    RULE ATTACHMENT WORKFLOW:
+    1. Perform control verification using `verify_control_in_assessment()` (MANDATORY).
+    2. Resolve rule_id using the CRITICAL EXECUTION BLOCKERS above (use `fetch_cc_rule_by_name()` when needed).
+    3. Validate that the rule is published in ComplianceCow.
+    4. Confirm evidence creation preference from the user (acknowledgment REQUIRED).
+    5. Check for existing rule attachments and request override acknowledgment if needed.
+    6. Attach rule to control.
+    7. Optionally create evidence for the control.
+
+    ATTACHMENT OPTIONS:
+    - create_evidence: Whether to create evidence along with rule attachment. 
+    Must be confirmed by the user before proceeding.
+
+    VALIDATION REQUIREMENTS:
+    - Control must be verified and confirmed as a leaf control.
+    - Rule must be published.
+    - Rule ID must be a valid UUID.
+    - Assessment and control must exist.
+    - User must acknowledge override before replacing an existing rule.
+
+    Args:
+        rule_id: ID of the rule to attach (UUID). If an alphabetic string is provided, 
+                it MUST be resolved to a UUID using `fetch_cc_rule_by_name()` before the tool proceeds.
+        assessment_name: Name of the assessment.
+        control_alias: Alias of the control.
+        control_id: ID of the control.
+        create_evidence: Whether to create auto-generated evidence from the rule output (default: True).
+                        ⚠️ MUST be confirmed by user acknowledgment before execution.
+
+    Returns:
+        Dict containing attachment status and details.
+    """
+
+    try:
+
+        body = {
+            "ruleId": rule_id,
+            "createEvidence":create_evidence
+        }
+        
+        response = rule.attach_rule_to_control_api(control_id,body)
+        
+        if response.get("success") or response.get("status") == "attached":
+            result = {
+                "success": True,
+                "rule_id": rule_id,
+                "assessment_name": assessment_name,
+                "control_alias": control_alias,
+                "control_id": control_id,
+                "attachment_status": "attached",
+                "evidence_created": create_evidence,
+                "message": f"Rule '{rule_id}' successfully attached to control '{control_alias}' in assessment '{assessment_name}'"
+            }
+            
+            if create_evidence:
+                result["evidence_info"] = response.get("evidenceInfo", {})
+                result["message"] += " with evidence created."
+            
+            return result
+        else:
+            return {
+                "success": False,
+                "rule_id": rule_id,
+                "assessment_name": assessment_name,
+                "control_alias": control_alias,
+                "error": response.get("error", "Failed to attach rule to control"),
+                "message": f"Failed to attach rule '{rule_id}' to control '{control_alias}'"
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "rule_name": rule_id,
+            "assessment_name": assessment_name,
+            "control_alias": control_alias,
+            "error": f"Failed to attach rule to control: {str(e)}",
+            "message": f"Error occurred while attaching rule to control"
+        }
