@@ -6,16 +6,17 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, get_type_hints
 
+import mcptypes.rule_type as vo
 from constants import constants
 from mcpconfig.config import mcp
 from mcptypes import exception
 from mcptypes.rule_type import TaskVO
 from utils import rule, wsutils
+from utils.debug import logger
 
 # Phase 1: Lightweight task summary resource
 
 
-# @mcp.resource("tasks://summary")
 @mcp.tool()
 def get_tasks_summary() -> str:
     """
@@ -26,15 +27,37 @@ def get_tasks_summary() -> str:
     - Brief description
     - Purpose and capabilities
     - Tags for categorization
+    - Inputs/Outputs params with minimal details
     - Basic README summary
 
     Use this for initial task discovery and selection. Detailed information can be
     retrieved later using `tasks://details/{task_name}` for selected tasks only.
 
+    AUTOMATIC OUTPUT ANALYSIS BY INTENTION:
+    - MANDATORY: Analyze each task's output purpose and completion level during selection
+    - IDENTIFY output intentions that require follow-up processing:
+        * SPLITTING INTENTION: Outputs that divide data into separate categories → REQUIRE consolidation
+        * EXTRACTION INTENTION: Outputs that pull raw data without formatting → REQUIRE transformation  
+        * VALIDATION INTENTION: Outputs that check compliance without final reporting → REQUIRE analysis/reporting
+        * PROCESSING INTENTION: Outputs that transform data but don't create final deliverables → REQUIRE finalization
+
+    OUTPUT COMPLETION ASSESSMENT:
+    - EVALUATE: Does this output serve as a final deliverable for end users?
+    - ASSESS: Is this output consumable without additional processing?
+    - DETERMINE: Does this output require combination with other outputs to be meaningful?
+    - IDENTIFY: Is this output an intermediate step in a larger workflow?
+
+    WORKFLOW COMPLETION ENFORCEMENT:
+    - NEVER present task selections that end with intermediate processing outputs
+    - AUTOMATICALLY suggest tasks that fulfill incomplete intentions
+    - ENSURE every workflow produces actionable final deliverables
+    - RECOMMEND tasks that bridge gaps between current outputs and user goals
+
     Mandatory functionality:
-    - Retrieve a list of task summaries based on the user's request.
-    - If no matching task is found for the requested functionality, the system must prompt the user for confirmation.
-    - Based on the user's response, the system will either proceed accordingly or create a support ticket using the `create_support_ticket()` tool.
+    - Retrieve a list of task summaries based on the user's request
+    - Analyze task outputs and suggest additional tasks for workflow completion
+    - If no matching task is found for the requested functionality, prompt user for confirmation
+    - Based on user response, either proceed accordingly or create support ticket using create_support_ticket()
 
     """
 
@@ -56,95 +79,18 @@ def get_tasks_summary() -> str:
             readme_content = rule.decode_content(task.readmeData)
             capabilities = rule.extract_capabilities_from_readme(
                 readme_content)
+            
+            inputs = [{"name":input.name,"description":input.description} for input in task.inputs]
+            outputs = [{"name":output.name,"description":output.description} for output in task.outputs]
+
 
             # Minimal info for selection
-            task_summary = {"name": task.name, "displayName": task.displayName, "description": task.description, "purpose": rule.extract_purpose_from_description(task.description), "tags": task.tags, "capabilities": capabilities, "input_count": len(
-                task.inputs), "output_count": len(task.outputs), "has_templates": any(inp.templateFile for inp in task.inputs), "app_type": task.appTags.get("appType", ["generic"])[0] if task.appTags.get("appType") else "generic"}
+            task_summary = {"name": task.name, "displayName": task.displayName, "description": task.description, "purpose": rule.extract_purpose_from_description(task.description), "tags": task.tags, "capabilities": capabilities, "input_params":inputs, "output_params": outputs, "has_templates": any(inp.templateFile for inp in task.inputs), "app_type": task.appTags.get("appType", ["generic"])[0] if task.appTags.get("appType") else "generic"}
             tasks_summary.append(task_summary)
 
         return json.dumps({"total_tasks": len(tasks_summary), "tasks": tasks_summary, "message": f"Found {len(tasks_summary)} available tasks - use tasks://details/{{task_name}} for full details", "categories": rule.categorize_tasks_by_tags(tasks_summary)}, indent=2)
     except Exception as e:
         return json.dumps({"error": f"An error occurred while fetching the task summary: {e}", "tasks": []})
-
-
-# Phase 2: Detailed task information resource
-@mcp.resource("tasks://details/{task_name}")
-def get_task_details(task_name: str) -> str:
-    """
-    Resource for retrieving complete task details after selection.
-
-    This resource provides detailed information for a specific task, including:
-    - Complete input/output specifications with template information
-    - Full README documentation
-    - All metadata and configuration options
-    - Decoded template content for inputs that have associated templates
-
-    IMPORTANT (MANDATORY BEHAVIOR):
-    If the requested task is not found with the user's specification, the system MUST NOT proceed automatically with an alternative approach or ticket creation. 
-    The system MUST first explicitly prompt the user and wait for their response. 
-    Only after receiving the user's confirmation will the system either:
-        1. Proceed with the alternative approach, OR
-        2. Invoke `create_support_ticket()` to log the issue using the MCP tool, collecting the required input details from the user.
-
-    This confirmation step is mandatory and must be completed before any further action is taken.
-
-    Args:
-        task_name: The name of the selected task for which to retrieve full details
-
-    Returns:
-        A JSON string containing the full set of task details if available,
-        or follows a user-confirmed alternative approach or support ticket creation flow if the task is not found.
-    """
-
-    try:
-        task = None
-        tasks_resp = rule.fetch_task_api(params={
-            "name": task_name})
-
-        if rule.is_valid_key(tasks_resp, "items", array_check=True):
-            task = TaskVO.from_dict(tasks_resp["items"][0])
-
-        if not task:
-            return json.dumps({"error": f"Task '{task_name}' not found in available tasks", "task": {}})
-
-        # Full detailed information
-        readme_content = rule.decode_content(task.readmeData)
-
-        # Process inputs with template information
-        detailed_inputs = []
-        for inp in task.inputs:
-            input_detail = {"name": inp.name, "description": inp.description, "dataType": inp.dataType, "defaultValue": inp.defaultValue, "required": inp.required,
-                            "allowedValues": inp.allowedValues or [], "format": inp.format, "showField": inp.showField, "allowUserValues": inp.allowUserValues, "has_template": bool(inp.templateFile)}
-
-            # Include decoded template if it exists
-            if inp.templateFile:
-                decoded_template = rule.decode_content(inp.templateFile)
-                input_detail.update({"template_decoded": decoded_template, "template_format": inp.format,
-                                    "template_guidance": f"Use get_template_guidance('{task.name}', '{inp.name}') for detailed guidance"})
-
-            detailed_inputs.append(input_detail)
-
-        task_details = {
-            "name": task.name,
-            "displayName": task.displayName,
-            "version": task.version,
-            "description": task.description,
-            "type": task.type,
-            "tags": task.tags,
-            "applicationType": task.applicationType,
-            "appTags": task.appTags,
-            "full_readme": readme_content,
-            "capabilities": rule.extract_capabilities_from_readme(readme_content),
-            "use_cases": rule.extract_use_cases_from_readme(readme_content),
-            "inputs": detailed_inputs,
-            "outputs": [{"name": out.name, "description": out.description, "dataType": out.dataType} for out in task.outputs],
-            "template_summary": {"total_templates": len([inp for inp in task.inputs if inp.templateFile]), "template_inputs": [inp.name for inp in task.inputs if inp.templateFile], "instructions": "Use get_template_guidance(task_name, input_name) for each template input"},
-            "integration_info": {"app_type": task.appTags.get("appType", ["generic"])[0] if task.appTags.get("appType") else "generic", "environment": task.appTags.get("environment", ["logical"]), "exec_level": task.appTags.get("execlevel", ["app"])},
-        }
-
-        return json.dumps(task_details, indent=2)
-    except Exception as e:
-        return json.dumps({"error": f"An error occurred while fetching the task {task_name} details: {e}", "task": {}})
 
 
 # Alternative tool version for task details
@@ -161,6 +107,24 @@ def get_task_details(task_name: str) -> Dict[str, Any]:
     - Analyze appTags to determine the application type
     - Review all metadata and configuration options
     - Use this information for accurate task matching and rule structure creation
+
+    INTENTION-BASED OUTPUT CHAINING:
+    - ANALYZE output purpose: Is this meant for direct user consumption or further processing?
+    - ASSESS completion level: Does this output fulfill the user's end goal or serve as a stepping stone?
+    - EVALUATE consolidation needs: Are multiple outputs meant to be combined for complete picture?
+    - DETERMINE transformation requirements: Does raw output need formatting for usability?
+
+    WORKFLOW GAP DETECTION:
+    - IDENTIFY outputs that represent partial solutions to user problems
+    - DETECT outputs that split information requiring reunification
+    - RECOGNIZE outputs that extract data without presenting insights
+    - FLAG outputs that validate without providing actionable summaries
+
+    COMPLETION INTENTION MATCHING:
+    - SUGGEST tasks that transform intermediate outputs into final deliverables
+    - RECOMMEND tasks that consolidate split information into unified reports
+    - PROPOSE tasks that add analysis layer to raw validation results
+    - ENSURE suggested tasks align with user's stated end goals
 
     IMPORTANT (MANDATORY BEHAVIOR):
     If the requested task is not found with the user's specification, the system MUST:
@@ -194,46 +158,6 @@ def get_task_details(task_name: str) -> Dict[str, Any]:
         return {"error": f"An error occurred while fetching the task {task_name} details: {e}"}
 
 
-# Category-filtered task summaries
-@mcp.resource("tasks://by-category/{category}")
-def get_tasks_by_category(category: str) -> str:
-    """
-    Resource for retrieving task summaries filtered by category or tag.
-
-    Args:
-        category: The task category or tag to filter by
-
-    Returns:
-        A JSON string containing minimal task information for tasks matching the category or tag
-    """
-
-    try:
-        tasks = []
-        tasks_resp = rule.fetch_task_api(params={
-            "tags": category})
-
-        if rule.is_valid_key(tasks_resp, "items", array_check=True):
-            tasks = [TaskVO.from_dict(task) for task in tasks_resp["items"]]
-        if not tasks:
-            return json.dumps({"error": f"No tasks found for the provided category or tag: {category}", "tasks": []})
-
-        filtered_tasks = []
-        for task in filtered_tasks:
-            readme_content = rule.decode_content(task.readmeData)
-            capabilities = rule.extract_capabilities_from_readme(
-                readme_content)
-
-            task_summary = {"name": task.name, "description": task.description, "purpose": rule.extract_purpose_from_description(
-                task.description), "tags": task.tags, "capabilities": capabilities, "input_count": len(task.inputs), "output_count": len(task.outputs), "has_templates": any(inp.templateFile for inp in task.inputs)}
-            filtered_tasks.append(task_summary)
-
-        return json.dumps({"category": category, "tasks": filtered_tasks, "count": len(filtered_tasks), "message": f"Use tasks://details/'{{task_name}} for complete information"}, indent=2)
-
-    except Exception as e:
-        return json.dumps({"error": f"An error occurred while fetching the tasks by category or tag: {category}: {e}"})
-
-
-# Template processing tools
 @mcp.tool()
 def get_template_guidance(task_name: str, input_name: str) -> Dict[str, Any]:
     """Get detailed guidance for filling out a template-based input.
@@ -245,30 +169,47 @@ def get_template_guidance(task_name: str, input_name: str) -> Dict[str, Any]:
     - Provides decoded template content and structure explanation
     - Returns required fields, format-specific tips, and validation rules
 
-    STEP 2 - TEMPLATE PRESENTATION TO USER:
+    PREFILLING PROCESS:
+    1. Analyze template structure for external dependencies
+    2. Prefill template with realistic values based on the instructions
+
+    RELEVANCE FILTERING:
+    - ANALYZE task description and user use case to create targeted search queries
+    - EXTRACT key terms from rule purpose and task capabilities
+    - COMBINE system name with specific functionality being configured
+    - PRIORITIZE documentation that matches the exact use case scenario
+
+    STEP 3 - ENHANCED TEMPLATE PRESENTATION TO USER:
     Show the template with this EXACT format:
     "Now configuring: [X of Y inputs]
 
     Task: {task_name}
     Input: {input_name} - {description}
 
-    Here's the template structure:
+    You can:
+    - Accept these prefilled values (type 'accept')
+    - Modify specific sections (provide your modifications)
+    - Replace entirely (provide your complete configuration)
 
-    [Show decoded_template]
+    Please review and confirm or modify the prefilled configuration:"
 
-    This {format} file requires:
-    - Field 1: [description]
-    - Field 2: [description]
+    STEP 4 - FALLBACK TO ORIGINAL TEMPLATE:
+    If no documentation found or prefilling fails:
+    - Show original empty template with standard format
+    - Include note: "No documentation found for prefilling. Please provide your configuration."
+    - Continue with existing workflow
 
-    Please provide your actual configuration following this template."
-
-    STEP 3 - COLLECT USER CONTENT:
-    - Wait for the user to provide their actual content
+    STEP 5 - COLLECT USER CONTENT:
+    - Wait for the user to provide their response (accept/modify/replace)
+    - Handle "accept" by using prefilled content
+    - Handle modifications by merging with prefilled baseline
+    - Handle complete replacement with user content
     - Do NOT proceed until the user provides content
-    - NEVER use template content as default values
+    - NEVER use template content as default values without documentation analysis
 
-    STEP 4 - PROCESS TEMPLATE INPUT:
+    STEP 6 - PROCESS TEMPLATE INPUT:
     - Call collect_template_input(task_name, input_name, user_content)
+    - Include documentation source metadata
     - Validates content format, checks required fields, uploads file
     - Returns file URL for use in rule structure
 
@@ -283,26 +224,29 @@ def get_template_guidance(task_name: str, input_name: str) -> Dict[str, Any]:
     - Required field presence checking
     - Data type validation where applicable
     - Template structure compliance
+    - Documentation standard compliance (when applicable)
 
     CRITICAL TEMPLATE RULES:
     - ALWAYS call get_template_guidance() for inputs with templates
-    - ALWAYS show the decoded template to the user with exact presentation format
-    - ALWAYS wait for the user to provide actual content
+    - ALWAYS analyze documentation before showing template to user
+    - ALWAYS show the prefilled template (or original if no docs found) with exact presentation format
+    - ALWAYS wait for the user to provide response (accept/modify/replace)
     - ALWAYS call collect_template_input() to process user content
-    - NEVER use template content directly - always use the user's actual content
+    - NEVER use template content directly - always use documentation-enhanced or user-provided content
     - ALWAYS use returned file URLs in rule structure
 
     PROGRESS TRACKING:
     - Show "Now configuring: [X of Y inputs]" for user progress
     - Include clear task and input identification
     - Provide format-specific guidance and tips
+    - Include documentation analysis results and source citations
 
     Args:
         task_name: Name of the task
         input_name: Name of the input that has a template
 
     Returns:
-        Dict containing template content and guidance
+        Dict containing template content, documentation analysis, prefilled values, and guidance
     """
 
     try:
@@ -344,7 +288,7 @@ def get_template_guidance(task_name: str, input_name: str) -> Dict[str, Any]:
 def collect_template_input(task_name: str, input_name: str, user_content: str) -> Dict[str, Any]:
     """Collect user input for template-based task inputs.
 
-    TEMPLATE INPUT PROCESSING:
+    TEMPLATE INPUT PROCESSING (Enhanced with Progressive Saving):
     - Validates user content against template format (JSON/TOML/YAML)
     - Handles JSON arrays and objects properly
     - Checks for required fields from template structure
@@ -352,21 +296,22 @@ def collect_template_input(task_name: str, input_name: str, user_content: str) -
     - Returns file URL for use in rule structure
     - MANDATORY: Gets final confirmation for EVERY input before proceeding
     - CRITICAL: Only processes user-provided content, never use default templates
+    - NEW: Prepared for automatic rule updates in confirm step
 
-    JSON ARRAY HANDLING:
+    JSON ARRAY HANDLING (Preserved):
     - Properly validates JSON arrays: [{"key": "value"}, {"key": "value"}]
     - Validates JSON objects: {"key": "value", "nested": {"key": "value"}}
     - Handles complex nested structures with arrays and objects
     - Validates each array element and object property
 
-    VALIDATION REQUIREMENTS:
+    VALIDATION REQUIREMENTS (Preserved):
     - JSON: Must be valid JSON (arrays/objects) with proper brackets and quotes
     - TOML: Must follow TOML syntax with proper sections [section_name]
     - YAML: Must have correct indentation and structure
     - XML: Must be well-formed XML with proper tags
     - Required fields: All template fields must be present in user content
 
-    FINAL CONFIRMATION WORKFLOW (MANDATORY):
+    FINAL CONFIRMATION WORKFLOW (MANDATORY - Preserved):
     1. After user provides template content
     2. Validate content format and structure
     3. Show preview of content to user
@@ -375,19 +320,20 @@ def collect_template_input(task_name: str, input_name: str, user_content: str) -
     6. If 'no': Allow user to re-enter content
     7. NEVER proceed without final confirmation
 
-    FILE NAMING CONVENTION:
+    FILE NAMING CONVENTION (Preserved):
     - Format: {task_name}_{input_name}.{extension}
     - Extensions: .json, .toml, .yaml, .xml, .txt based on format
 
-    WORKFLOW INTEGRATION:
+    WORKFLOW INTEGRATION (Enhanced):
     1. Called after get_template_guidance() shows template to user
     2. User provides their actual configuration content
     3. This tool validates content (including JSON arrays)
     4. Shows content preview and asks for confirmation
     5. Only after confirmation: uploads file or stores in memory
     6. Returns file URL or memory reference for rule structure
+    7. NEW: Prepared for rule update in confirm_template_input()
 
-    CRITICAL RULES:
+    CRITICAL RULES (Preserved):
     - ONLY upload files for inputs with dataType = "FILE" or "HTTP_CONFIG"
     - Template inputs and HTTP_CONFIG inputs are typically file types and need file uploads
     - Store non-FILE template content in memory
@@ -401,13 +347,12 @@ def collect_template_input(task_name: str, input_name: str, user_content: str) -
         user_content: Content provided by the user based on the template
 
     Returns:
-        Dict containing validation results and file URL or memory reference
+        Dict containing validation results and file URL or memory reference,
+        prepared for progressive rule updates
     """
     try:
         task = None
-        tasks_resp = rule.fetch_task_api(params={
-            "name": task_name})
-
+        tasks_resp = rule.fetch_task_api(params={"name": task_name})
         if rule.is_valid_key(tasks_resp, "items", array_check=True):
             task = TaskVO.from_dict(tasks_resp["items"][0])
         if not task:
@@ -423,18 +368,29 @@ def collect_template_input(task_name: str, input_name: str, user_content: str) -
         if not task_input:
             return {"success": False, "error": f"Input {input_name} not found in task {task_name}"}
 
-        # Validate the content including JSON arrays
-        validation_result = rule.validate_template_content_enhanced(
-            task_input, user_content)
+        # Validate the content including JSON arrays (preserved validation)
+        validation_result = rule.validate_template_content_enhanced(task_input, user_content)
         if not validation_result["valid"]:
             return {"success": False, "error": "Content validation failed", "validation_errors": validation_result["errors"], "suggestions": validation_result["suggestions"]}
 
-        # Generate content preview for confirmation
-        content_preview = rule.generate_content_preview(
-            user_content, task_input.format)
+        # Generate content preview for confirmation (preserved)
+        content_preview = rule.generate_content_preview(user_content, task_input.format)
 
         # Need final confirmation before storing/uploading
-        return {"success": True, "task_name": task_name, "input_name": input_name, "validated_content": user_content, "content_preview": content_preview, "needs_final_confirmation": True, "data_type": task_input.dataType, "format": task_input.format, "is_file_type": task_input.dataType.upper() in ["FILE", "HTTP_CONFIG"], "final_confirmation_message": f"You provided this {task_input.format.upper()} content:\n\n{content_preview}\n\nIs this correct? (yes/no)", "message": "Template content validated - needs final confirmation before processing"}
+        return {
+            "success": True,
+            "task_name": task_name,
+            "input_name": input_name,
+            "validated_content": user_content,
+            "content_preview": content_preview,
+            "needs_final_confirmation": True,
+            "data_type": task_input.dataType,
+            "format": task_input.format,
+            "is_file_type": task_input.dataType.upper() in ["FILE", "HTTP_CONFIG"],
+            "final_confirmation_message": f"You provided this {task_input.format.upper()} content:\n\n{content_preview}\n\nIs this correct? (yes/no)",
+            "message": "Template content validated - needs final confirmation before processing and rule update",
+            "ready_for_rule_update": True  # NEW: Indicates this input is ready for rule progression
+        }
 
     except Exception as e:
         return {"success": False, "error": f"Failed to process template input: {e}"}
@@ -444,17 +400,27 @@ def collect_template_input(task_name: str, input_name: str, user_content: str) -
 def confirm_template_input(rule_name: str, task_name: str, input_name: str, confirmed_content: str) -> Dict[str, Any]:
     """Confirm and process template input after user validation.
 
-    CONFIRMATION PROCESSING:
+    CONFIRMATION PROCESSING (Enhanced with Automatic Rule Updates):
     - Handles final confirmation of template content
     - Uploads files for FILE dataType inputs
     - Stores content in memory for non-FILE inputs
     - MANDATORY step before proceeding to next input
+    - NEW: Automatically updates the rule with new input after processing
 
-    PROCESSING RULES:
+    PROCESSING RULES (Enhanced):
     - FILE dataType: Upload content as file, return file URL
     - HTTP_CONFIG dataType: Upload content as file, return file URL
     - Non-FILE dataType: Store content in memory
     - Include metadata about confirmation and timestamp
+    - NEW: Automatic rule update with new input data
+
+    AUTOMATIC RULE UPDATE PROCESS:
+    After successful input processing, this tool automatically:
+    1. Fetches the current rule structure
+    2. Adds the new input to spec.inputs
+    3. Updates spec.inputsMeta__ with input metadata
+    4. Calls create_rule() to save the updated rule
+    5. Rule status will be auto-detected (DRAFT → collecting_inputs → READY_FOR_CREATION)
 
     Args:
         rule_name: Descriptive name for the rule based on the user's use case. 
@@ -465,13 +431,11 @@ def confirm_template_input(rule_name: str, task_name: str, input_name: str, conf
         confirmed_content: The content user confirmed
 
     Returns:
-        Dict containing processing results (file URL or memory reference)
+        Dict containing processing results (file URL or memory reference) and rule update status
     """
     try:
         task = None
-        tasks_resp = rule.fetch_task_api(params={
-            "name": task_name})
-
+        tasks_resp = rule.fetch_task_api(params={"name": task_name})
         if rule.is_valid_key(tasks_resp, "items", array_check=True):
             task = TaskVO.from_dict(tasks_resp["items"][0])
         if not task:
@@ -487,24 +451,97 @@ def confirm_template_input(rule_name: str, task_name: str, input_name: str, conf
         if not task_input:
             return {"success": False, "error": f"Input {input_name} not found in task {task_name}"}
 
-        # Check if this is a FILE or HTTP_CONFIG type input that needs upload
+        # Check if this is a FILE or HTTP_CONFIG type input that needs upload (preserved logic)
         if task_input.dataType.upper() in ["FILE", "HTTP_CONFIG"]:
             # Generate appropriate filename
-            file_extension = rule.get_file_extension(
-                task_input.format)
+            file_extension = rule.get_file_extension(task_input.format)
             file_name = f"{task_name}_{input_name}{file_extension}"
 
             # Upload the file and get URL
-            upload_result = upload_file(
-                rule_name=rule_name, file_name=file_name, content=confirmed_content)
+            upload_result = upload_file(rule_name=rule_name, file_name=file_name, content=confirmed_content)
 
             if upload_result["success"]:
-                return {"success": True, "task_name": task_name, "input_name": input_name, "file_url": upload_result["file_url"], "filename": file_name, "content_size": len(confirmed_content), "storage_type": "FILE", "data_type": task_input.dataType, "format": task_input.format, "timestamp": datetime.now().isoformat(), "message": f"Template file uploaded successfully for {input_name} in {task_name}"}
+                input_value = upload_result["file_url"]
+                storage_type = "FILE"
             else:
                 return {"success": False, "error": f"File upload failed: {upload_result.get('error', 'Unknown error')}"}
         else:
             # For non-FILE inputs, store content in memory (don't upload)
-            return {"success": True, "task_name": task_name, "input_name": input_name, "stored_content": confirmed_content, "content_size": len(confirmed_content), "storage_type": "MEMORY", "data_type": task_input.dataType, "format": task_input.format, "timestamp": datetime.now().isoformat(), "message": f"Template content stored in memory for {input_name} in {task_name}"}
+            input_value = confirmed_content
+            storage_type = "MEMORY"
+
+        # NEW: AUTOMATIC RULE UPDATE WITH NEW INPUT
+        rule_update_success = False
+        rule_status = "UNKNOWN"
+        rule_progress = 0
+        
+        try:
+            # Fetch current rule
+            current_rule = fetch_rule(rule_name)
+            logger.info(f"current_rule ::{current_rule}")
+            if current_rule["success"]:
+                rule_structure = current_rule["rule_structure"]
+
+                logger.info(f"rule_structure 111 ::{rule_structure}")
+
+                if not rule.is_valid_key(rule_structure["spec"],"inputs"):
+                    rule_structure["spec"]["inputs"] = {}
+                
+                # Add new input to rule structure
+                rule_structure["spec"]["inputs"][input_name] = input_value
+                
+                # Add/update input metadata
+                input_meta = {
+                    "name": input_name,
+                    "dataType": task_input.dataType,
+                    "required": task_input.required,
+                    "defaultValue": input_value
+                }
+                if hasattr(task_input, 'format') and task_input.format:
+                    input_meta["format"] = task_input.format
+
+                logger.info(f"rule_structure 2222 ::{rule_structure}")
+
+                if not rule.is_valid_key(rule_structure["spec"],"inputsMeta__"):
+                    rule_structure["spec"]["inputsMeta__"] = []
+                
+                # Remove existing metadata for this input and add new one
+                existing_meta = rule_structure["spec"]["inputsMeta__"]
+                rule_structure["spec"]["inputsMeta__"] = [m for m in existing_meta if m["name"] != input_name]
+                rule_structure["spec"]["inputsMeta__"].append(input_meta)
+
+
+                logger.info(f"rule_structure 3333 ::{rule_structure}")
+                
+                # Update rule - status will be auto-detected
+                update_result = create_rule(rule_structure)
+                logger.info(f"update_result ::{update_result}")
+                rule_update_success = update_result["success"]
+                rule_status = update_result.get("detected_status", "UNKNOWN")
+                rule_progress = update_result.get("progress_percentage", 0)
+                
+        except Exception as update_error:
+            # Log the error but don't fail the input processing
+            print(f"Warning: Rule update failed for {rule_name}: {update_error}")
+
+        return {
+            "success": True,
+            "task_name": task_name,
+            "input_name": input_name,
+            "file_url": input_value if storage_type == "FILE" else None,
+            "stored_content": input_value if storage_type == "MEMORY" else None,
+            "filename": file_name if storage_type == "FILE" else None,
+            "content_size": len(confirmed_content),
+            "storage_type": storage_type,
+            "data_type": task_input.dataType,
+            "format": task_input.format,
+            "timestamp": datetime.now().isoformat(),
+            "rule_name": rule_name,
+            "rule_updated": rule_update_success,
+            "rule_status": rule_status,
+            "rule_progress": rule_progress,
+            "message": f"Template file {'uploaded' if storage_type == 'FILE' else 'stored'} successfully for {input_name} in {task_name}. Rule '{rule_name}' {'updated automatically' if rule_update_success else 'update failed'}."
+        }
 
     except Exception as e:
         return {"success": False, "error": f"Failed to confirm template input: {e}"}
@@ -757,39 +794,48 @@ def collect_parameter_input(task_name: str, input_name: str, user_value: str = N
 
 
 @mcp.tool()
-def confirm_parameter_input(task_name: str, input_name: str, confirmed_value: str, confirmation_type: str = "final") -> Dict[str, Any]:
+def confirm_parameter_input(task_name: str, input_name: str, confirmed_value: str, confirmation_type: str = "final", rule_name: str = None) -> Dict[str, Any]:
     """Confirm and store parameter input after user validation.
 
-    CONFIRMATION PROCESSING:
+    CONFIRMATION PROCESSING (Enhanced with Automatic Rule Updates):
     - Handles final confirmation of parameter values
     - Stores confirmed values in memory
     - Supports both default value confirmation and final value confirmation
     - MANDATORY step before proceeding to next input
+    - NEW: Automatically updates rule with parameter if rule_name provided
 
-    CONFIRMATION TYPES:
+    CONFIRMATION TYPES (Preserved):
     - "default": User confirmed they want to use default value
     - "final": User confirmed their entered value is correct
     - Both types require explicit user confirmation
 
-    STORAGE RULES:
+    STORAGE RULES (Enhanced):
     - Store all confirmed values in memory (never upload files)
     - Only store after explicit user confirmation
     - Include metadata about confirmation type and timestamp
+    - NEW: Automatic rule update with parameter data
+
+    AUTOMATIC RULE UPDATE PROCESS:
+    If rule_name is provided, this tool automatically:
+    1. Fetches the current rule structure
+    2. Adds the parameter to spec.inputs
+    3. Updates spec.inputsMeta__ with parameter metadata
+    4. Calls create_rule() to save the updated rule
+    5. Rule status will be auto-detected based on completion
 
     Args:
         task_name: Name of the task this input belongs to
         input_name: Name of the input parameter
         confirmed_value: The value user confirmed
         confirmation_type: Type of confirmation ("default" or "final")
+        rule_name: Optional rule name for automatic rule updates
 
     Returns:
-        Dict containing stored value confirmation
+        Dict containing stored value confirmation and rule update status
     """
     try:
         task = None
-        tasks_resp = rule.fetch_task_api(params={
-            "name": task_name})
-
+        tasks_resp = rule.fetch_task_api(params={"name": task_name})
         if rule.is_valid_key(tasks_resp, "items", array_check=True):
             task = TaskVO.from_dict(tasks_resp["items"][0])
         if not task:
@@ -805,14 +851,66 @@ def confirm_parameter_input(task_name: str, input_name: str, confirmed_value: st
         if not task_input:
             return {"success": False, "error": f"Input {input_name} not found in task {task_name}"}
 
-        # Validate the confirmed value
-        validation_result = rule.validate_parameter_value(
-            confirmed_value, task_input.dataType)
+        # Validate the confirmed value (preserved validation)
+        validation_result = rule.validate_parameter_value(confirmed_value, task_input.dataType)
         if not validation_result["valid"]:
             return {"success": False, "error": "Confirmed value is invalid", "validation_errors": validation_result["errors"]}
 
-        # Store the confirmed value in memory
-        return {"success": True, "task_name": task_name, "input_name": input_name, "stored_value": validation_result["converted_value"], "data_type": task_input.dataType, "required": task_input.required, "storage_type": "MEMORY", "confirmation_type": confirmation_type, "timestamp": datetime.now().isoformat(), "message": f"Parameter value confirmed and stored in memory for {input_name}"}
+        # NEW: AUTOMATIC RULE UPDATE WITH NEW PARAMETER (if rule_name provided)
+        rule_update_success = False
+        rule_status = "UNKNOWN"
+        rule_progress = 0
+        
+        if rule_name:
+            try:
+                # Fetch current rule
+                current_rule = fetch_rule(rule_name)
+                if current_rule["success"]:
+                    rule_structure = current_rule["rule_structure"]
+                    
+                    # Add parameter to rule structure
+                    rule_structure["spec"]["inputs"][input_name] = validation_result["converted_value"]
+                    
+                    # Add/update parameter metadata
+                    input_meta = {
+                        "name": input_name,
+                        "dataType": task_input.dataType,
+                        "required": task_input.required,
+                        "defaultValue": validation_result["converted_value"]
+                    }
+                    
+                    # Update metadata list
+                    existing_meta = rule_structure["spec"]["inputsMeta__"]
+                    rule_structure["spec"]["inputsMeta__"] = [m for m in existing_meta if m["name"] != input_name]
+                    rule_structure["spec"]["inputsMeta__"].append(input_meta)
+                    
+                    # Update rule - status auto-detected
+                    update_result = create_rule(rule_structure)
+                    rule_update_success = update_result["success"]
+                    rule_status = update_result.get("detected_status", "UNKNOWN")
+                    rule_progress = update_result.get("progress_percentage", 0)
+                    
+            except Exception as update_error:
+                # Log the error but don't fail the parameter processing
+                print(f"Warning: Rule update failed for {rule_name}: {update_error}")
+
+        # Store the confirmed value in memory (preserved logic)
+        return {
+            "success": True,
+            "task_name": task_name,
+            "input_name": input_name,
+            "stored_value": validation_result["converted_value"],
+            "data_type": task_input.dataType,
+            "required": task_input.required,
+            "storage_type": "MEMORY",
+            "confirmation_type": confirmation_type,
+            "timestamp": datetime.now().isoformat(),
+            "rule_name": rule_name,
+            "rule_updated": rule_update_success,
+            "rule_status": rule_status,
+            "rule_progress": rule_progress,
+            "message": f"Parameter value confirmed and stored in memory for {input_name}. Rule '{rule_name}' {'updated automatically' if rule_update_success and rule_name else 'not updated (no rule_name provided)'}."
+        }
 
     except Exception as e:
         return {"success": False, "error": f"Failed to confirm parameter input: {e}"}
@@ -823,19 +921,46 @@ def confirm_parameter_input(task_name: str, input_name: str, confirmed_value: st
 def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> Dict[str, Any]:
     """Prepare and present input collection overview before starting any input collection.
 
-    MANDATORY FIRST STEP - INPUT OVERVIEW PROCESS:
+    MANDATORY FIRST STEP - INPUT OVERVIEW PROCESS (Enhanced):
 
     This tool MUST be called before collecting any inputs. It analyzes all selected tasks
     and presents a complete overview of what inputs will be needed.
 
-    HANDLES DUPLICATE INPUT NAMES WITH TASK ALIASES:
+    ENHANCED WITH AUTOMATIC RULE CREATION:
+    After user confirms the input overview, this tool automatically creates the initial 
+    rule structure with selected tasks. The rule will be saved with DRAFT status and 
+    can be progressively updated as inputs are collected.
+
+    **MANDATORY WORKFLOW ENFORCEMENT - CRITICAL INSTRUCTION:**
+    - AFTER user confirms the input overview, IMMEDIATELY call create_rule() with initial structure
+    - This call is MANDATORY and CANNOT be skipped or deferred
+    - The initial rule structure MUST be created before any input collection begins
+    - BLOCK all subsequent input collection if initial rule creation fails
+    - NEVER proceed to input collection without successful initial rule creation
+    - If create_rule() fails, STOP workflow and resolve the issue before continuing
+    - The rule creation establishes the foundation for progressive updates during input collection
+
+    **ENFORCEMENT STEPS:**
+    1. Present overview to user
+    2. Get user confirmation
+    3. **IMMEDIATELY call create_rule() with initial structure that MUST INCLUDE inputs and inputsMeta__ sections WITH ACTUAL INPUT DATA - DO NOT LEAVE inputs and inputsMeta__ SECTION EMPTY - INPUTS AND INPUTSMETA__ ARE MANDATORY CORE COMPONENTS THAT MUST CONTAIN THE REQUIRED INPUT MAPPINGS - THIS IS NON-NEGOTIABLE - NO EXCEPTIONS**
+    4. Verify rule creation success before proceeding
+    5. Only then allow input collection to begin
+
+    **FAILURE HANDLING:**
+    - If user confirms but create_rule() fails → STOP and fix issue
+    - If user declines → End workflow, no rule creation needed
+    - If create_rule() succeeds → Proceed to input collection
+    - NEVER skip the create_rule() call after user confirmation
+
+    HANDLES DUPLICATE INPUT NAMES WITH TASK ALIASES (Preserved):
     - Creates unique identifiers for each task-alias-input combination
     - Format: "{task_alias}.{input_name}" for uniqueness
     - Prevents conflicts when multiple tasks have same input names or same task used multiple times
     - Maintains clear mapping between task aliases and their specific inputs
     - Task aliases should be simple, meaningful step indicators (e.g., "step1", "validation", "processing")
 
-    OVERVIEW REQUIREMENTS:
+    OVERVIEW REQUIREMENTS (Preserved):
     1. Analyze ALL selected tasks with their aliases for input requirements
     2. Categorize inputs: templates vs parameters
     3. Create unique identifiers for each task-alias-input combination
@@ -843,8 +968,9 @@ def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> D
     5. Present clear overview to user
     6. Get user confirmation before proceeding
     7. Return structured overview for systematic collection
+    8. NEW: Automatically create initial rule after user confirmation
 
-    OVERVIEW PRESENTATION FORMAT:
+    OVERVIEW PRESENTATION FORMAT (Preserved):
     "INPUT COLLECTION OVERVIEW:
 
     I've analyzed your selected tasks. Here's what we need to configure:
@@ -869,12 +995,13 @@ def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> D
     This will be collected step-by-step with progress indicators.
     Ready to start systematic input collection?"
 
-    CRITICAL WORKFLOW RULES:
+    CRITICAL WORKFLOW RULES (Preserved):
     - ALWAYS call this tool first before any input collection
     - NEVER start collecting inputs without user seeing overview
     - NEVER proceed without user confirmation
     - Create unique task_alias.input identifiers to avoid conflicts
     - Show clear task-alias-input relationships to user
+    - NEW: Create initial rule structure after user confirmation
 
     Args:
         selected_tasks: List of dicts with 'task_name' and 'task_alias'
@@ -885,7 +1012,8 @@ def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> D
                        ]
 
     Returns:
-        Dict containing structured input overview and collection plan with unique identifiers
+        Dict containing structured input overview and collection plan with unique identifiers,
+        plus automatic rule creation capability after user confirmation
     """
 
     if not selected_tasks:
@@ -903,7 +1031,7 @@ def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> D
             "task_alias_map": {}     # Maps task_alias to task_name for reference
         }
 
-        # Validate input format and task aliases
+        # Validate input format and task aliases (preserved validation)
         for task_info in selected_tasks:
             if not isinstance(task_info, dict) or "task_name" not in task_info or "task_alias" not in task_info:
                 return {"success": False, "error": "Each task must be a dict with 'task_name' and 'task_alias' keys"}
@@ -925,18 +1053,16 @@ def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> D
                 "purpose": task_info.get("purpose", "")
             }
 
+        # Get available tasks (preserved logic)
         available_tasks = []
-        tasks_resp = rule.fetch_task_api(params={
-            "tags": "primitive"})
-
+        tasks_resp = rule.fetch_task_api(params={"tags": "primitive"})
         if rule.is_valid_key(tasks_resp, "items", array_check=True):
-            available_tasks = [TaskVO.from_dict(
-                task) for task in tasks_resp["items"]]
+            available_tasks = [TaskVO.from_dict(task) for task in tasks_resp["items"]]
 
         if not available_tasks:
             return {"success": False, "error": "No tasks loaded"}
 
-        # Analyze each selected task with its alias
+        # Analyze each selected task with its alias (preserved analysis)
         for task_info in selected_tasks:
             task_name = task_info["task_name"]
             task_alias = task_info["task_alias"]
@@ -991,13 +1117,82 @@ def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> D
                     # Parameter inputs are quicker (30 seconds each)
                     input_analysis["estimated_minutes"] += 0.5
 
-        input_analysis["total_count"] = input_analysis["template_count"] + \
-            input_analysis["parameter_count"]
+        input_analysis["total_count"] = input_analysis["template_count"] + input_analysis["parameter_count"]
+        
+        # Generate initial inputs, inputsMeta__ for rule creation
+        initial_inputs = {}
+        initial_inputs_meta = []
+        
+        # Track duplicate input names to handle conflicts
+        input_name_counts = {}
 
-        # Generate overview presentation
-        overview_text = rule.generate_input_overview_presentation_with_unique_ids(
-            input_analysis)
+        task_to_inputs_map = {}  # Maps task_alias to list of input names
 
+        # Process only required inputs from template_inputs and parameter_inputs
+        all_required_inputs = input_analysis["template_inputs"] + input_analysis["parameter_inputs"]
+        
+        for input_info in all_required_inputs:
+            input_name = input_info["input_name"]
+            task_alias = input_info["task_alias"]
+            unique_input_id = input_info["unique_input_id"]
+            
+            # Get the task input object from unique_input_map
+            task_input_obj = input_analysis["unique_input_map"][unique_input_id]["task_input_obj"]
+            
+            # Handle duplicate input names by creating unique names
+            if input_name in input_name_counts:
+                input_name_counts[input_name] += 1
+                unique_name = f"{task_alias}_{input_name}"
+            else:
+                input_name_counts[input_name] = 1
+                # Check if this input name appears in other required inputs
+                duplicate_count = sum(1 for other_input in all_required_inputs 
+                                    if other_input["input_name"] == input_name and other_input["required"])
+                if duplicate_count > 1:
+                    unique_name = f"{task_alias}_{input_name}"
+                else:
+                    unique_name = input_name
+            
+            # Set initial value based on dataType
+            data_type = task_input_obj.dataType.upper()
+            if data_type in ["FILE", "HTTP_CONFIG"]:
+                initial_value = ""  # Empty string for file inputs
+            elif data_type == "BOOLEAN":
+                initial_value = False  # Default boolean value
+            elif data_type in ["INT", "INTEGER"]:
+                initial_value = 0  # Default integer value
+            elif data_type == "FLOAT":
+                initial_value = 0.0  # Default float value
+            elif data_type in ["STRING", "TEXT"]:
+                initial_value = ""  # Empty string for text inputs
+            elif data_type in ["DATE", "DATETIME"]:
+                initial_value = ""  # Empty string for date inputs
+            else:
+                initial_value = ""  # Default to empty string for unknown types
+            
+            # Add to inputs with dataType-appropriate initial value
+            initial_inputs[unique_name] = initial_value
+            
+            # Add to inputsMeta__ with complete metadata
+            input_meta = {
+                "name": unique_name,
+                "dataType": task_input_obj.dataType,
+                "defaultValue": initial_value,  # Same as inputs value
+                "showField": True,
+                "required": task_input_obj.required,
+                "allowedValues": [],
+                "repeated": False
+            }
+            
+            # Add format if it's available
+            if hasattr(task_input_obj, 'format') and task_input_obj.format:
+                input_meta["format"] = task_input_obj.format
+            
+            initial_inputs_meta.append(input_meta)
+
+        # Generate overview presentation (preserved)
+        overview_text = rule.generate_input_overview_presentation_with_unique_ids(input_analysis)
+        
         return {
             "success": True,
             "input_analysis": input_analysis,
@@ -1010,8 +1205,12 @@ def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> D
                 "step3": "Final verification of all collected inputs with aliases",
                 "step4": "Rule structure creation with proper task alias mapping"
             },
+            "rule_creation_ready": True,  # NEW: Indicates ready for initial rule creation
+            "selected_tasks": selected_tasks,  # NEW: Store for rule creation
+            "initial_inputs": initial_inputs,  # NEW: Store for rule creation
+            "initial_inputs_meta": initial_inputs_meta,  # NEW: Store for rule creation
             "message": "Input overview prepared with task aliases. Present to user and get confirmation before proceeding.",
-            "next_action": "Show overview_presentation to user and wait for confirmation"
+            "next_action": "Show overview_presentation to user and wait for confirmation, then create initial rule"
         }
 
     except Exception as e:
@@ -1022,18 +1221,25 @@ def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> D
 def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
     """Verify all collected inputs with user before rule creation.
 
-    MANDATORY VERIFICATION STEP:
+    MANDATORY VERIFICATION STEP (Enhanced):
 
-    This tool MUST be called after all inputs are collected but before create_rule().
+    This tool MUST be called after all inputs are collected but before final rule completion.
     It presents a comprehensive summary of all collected inputs for user verification.
 
-    HANDLES DUPLICATE INPUT NAMES WITH TASK ALIASES:
+    ENHANCED WITH AUTOMATIC RULE FINALIZATION:
+    After user confirms verification, this tool can automatically finalize the rule by:
+    1. Building complete I/O mapping based on task sequence and inputs
+    2. Adding mandatory compliance outputs 
+    3. Setting rule status to ACTIVE
+    4. Completing the rule creation process
+
+    HANDLES DUPLICATE INPUT NAMES WITH TASK ALIASES (Preserved):
     - Uses unique identifiers (TaskAlias.InputName) for each input
     - Properly maps each unique input to its specific task alias
     - Creates structured inputs for rule creation with unique names when needed
     - Maintains clear separation between inputs from different task instances
 
-    VERIFICATION REQUIREMENTS:
+    VERIFICATION REQUIREMENTS (Preserved):
     1. Show complete summary of ALL collected inputs with unique IDs
     2. Display both template files and parameter values
     3. Show file URLs for uploaded templates
@@ -1041,8 +1247,9 @@ def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
     5. Get explicit user confirmation
     6. Allow user to modify values if needed
     7. Prepare inputs for rule structure creation with proper task alias mapping
+    8. NEW: Automatically finalize rule after user confirmation
 
-    VERIFICATION PRESENTATION FORMAT:
+    VERIFICATION PRESENTATION FORMAT (Preserved):
     "INPUT VERIFICATION SUMMARY:
 
     Please review all collected inputs before rule creation:
@@ -1076,26 +1283,27 @@ def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
     - Type 'modify [TaskAlias.InputName]' to change a specific input
     - Type 'cancel' to abort rule creation"
 
-    CRITICAL VERIFICATION RULES:
-    - NEVER proceed to create_rule() without user verification
+    CRITICAL VERIFICATION RULES (Enhanced):
+    - NEVER proceed to final rule creation without user verification
     - ALWAYS show complete input summary with unique identifiers
     - ALWAYS get explicit user confirmation
     - Allow input modifications using unique IDs
     - Validate completeness before approval
     - Prepare structured inputs for rule creation with proper task mapping
+    - NEW: Automatically finalize rule with I/O mapping after confirmation
 
     Args:
         collected_inputs: Dict containing all collected template files and parameter values with unique IDs
 
     Returns:
-        Dict containing verification status, user confirmation, and structured inputs for rule creation
+        Dict containing verification status, user confirmation, and structured inputs for rule finalization
     """
 
     if not collected_inputs:
         return {"success": False, "error": "No inputs provided for verification"}
 
     try:
-        # Analyze collected inputs with unique ID handling
+        # Analyze collected inputs with unique ID handling (preserved logic)
         verification_summary = {
             "template_files": [], 
             "parameter_values": [], 
@@ -1108,7 +1316,7 @@ def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
             "task_alias_map": collected_inputs.get("task_alias_map", {})  # Preserve task alias mapping
         }
 
-        # Process template files with unique IDs
+        # Process template files with unique IDs (preserved processing)
         template_files = collected_inputs.get("template_files", {})
         for unique_input_id, file_info in template_files.items():
             # Parse unique_input_id: "TaskAlias.InputName"
@@ -1131,8 +1339,6 @@ def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
             })
 
             # For rule creation: Handle input naming strategy
-            # If there are conflicts (same input name from different tasks), use unique names
-            # Otherwise, use original input names for simplicity
             input_value = file_info.get("file_url")
             
             # Check if this input name already exists in structured_inputs
@@ -1149,7 +1355,8 @@ def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
                 "name": rule_input_name,
                 "dataType": file_info.get("data_type", "FILE"),
                 "required": file_info.get("required", True),
-                "defaultValue": input_value
+                "defaultValue": input_value,
+                "format": file_info.get("format")
             })
 
             # Store mapping for I/O map creation
@@ -1161,7 +1368,7 @@ def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
                 "rule_input_name": rule_input_name
             }
 
-        # Process parameter values with unique IDs
+        # Process parameter values with unique IDs (preserved processing)
         parameter_values = collected_inputs.get("parameter_values", {})
         for unique_input_id, value_info in parameter_values.items():
             # Parse unique_input_id: "TaskAlias.InputName"
@@ -1217,9 +1424,8 @@ def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
             if "Missing" in item["status"] or "⚠" in item["status"]:
                 verification_summary["missing_inputs"].append(item["unique_input_id"])
 
-        # Generate verification presentation
-        verification_text = rule.generate_verification_presentation_with_unique_ids(
-            verification_summary)
+        # Generate verification presentation (preserved)
+        verification_text = rule.generate_verification_presentation_with_unique_ids(verification_summary)
 
         return {
             "success": True,
@@ -1231,8 +1437,9 @@ def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
             "inputs_meta": verification_summary["inputs_meta"],
             "task_input_mapping": verification_summary["task_input_mapping"],
             "task_alias_map": verification_summary["task_alias_map"],
-            "message": "Input verification prepared with task aliases. Present to user for confirmation.",
-            "next_action": "Show verification_presentation to user and wait for confirmation"
+            "rule_finalization_ready": True,  # NEW: Ready for automatic rule finalization
+            "message": "Input verification prepared with task aliases. Present to user for confirmation, then automatically finalize rule.",
+            "next_action": "Show verification_presentation to user and wait for confirmation, then finalize rule"
         }
 
     except Exception as e:
@@ -1243,40 +1450,72 @@ def verify_collected_inputs(collected_inputs: Dict[str, Any]) -> Dict[str, Any]:
 def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
     """Create a rule with the provided structure.
 
-    COMPLETE RULE CREATION PROCESS:
+    COMPLETE RULE CREATION PROCESS WITH PROGRESSIVE SAVING:
 
-    CRITICAL: This tool should ONLY be called after complete input collection and verification workflow.
+    This tool now handles both initial rule creation and progressive updates during the rule creation workflow.
+    It intelligently detects the completion status and sets appropriate metadata automatically.
 
-    PRE-CREATION REQUIREMENTS:
+    ENHANCED FOR PROGRESSIVE SAVING:
+    - Automatically detects rule completion status based on rule structure content
+    - Determines if rule is in-progress, ready for execution, or needs more inputs
+    - Handles both initial creation and updates of existing rules
+    - No additional parameters needed - analyzes rule structure intelligently
+    - Maintains all existing validation and creation logic
+    - Preserves all original docstring instructions and requirements
+
+    AUTOMATIC STATUS DETECTION:
+    - DRAFT: Rule has tasks but missing inputs or I/O mapping (5-85% complete)
+    - READY_FOR_CREATION: All inputs collected but I/O mapping incomplete (85% complete)
+    - ACTIVE: Complete rule with tasks, inputs, and I/O mapping (100% complete)
+
+    RULE COMPLETION ANALYSIS:
+    - Checks if tasks are defined in spec.tasks
+    - Counts collected inputs in spec.inputs vs spec.inputsMeta__
+    - Validates I/O mapping presence and completeness in spec.ioMap
+    - Analyzes outputsMeta__ for mandatory compliance outputs
+    - Sets appropriate status and creation phase automatically
+
+    PROGRESSIVE CREATION PHASES (Auto-detected):
+    1. "initialized" - Basic rule info provided (5%)
+    2. "tasks_selected" - Tasks chosen and defined (25%) 
+    3. "collecting_inputs" - Individual inputs being collected (25-85%)
+    4. "inputs_collected" - All inputs gathered, ready for I/O mapping (85%)
+    5. "completed" - Final rule creation complete with I/O mapping (100%)
+
+    ORIGINAL REQUIREMENTS MAINTAINED:
+    - All existing validation rules still apply
+    - Task alias validation in I/O mappings preserved
+    - Primary app type determination logic maintained
+    - Mandatory output requirements (CompliancePCT_, ComplianceStatus_, LogFile)
+    - YAML preview and user confirmation workflow preserved
+    - All existing error handling and validation checks
+
+    CRITICAL: This tool should be called:
+    1. After planning phase to create initial rule structure
+    2. After each input collection to update rule progressively
+    3. After input verification to finalize rule with I/O mapping
+    4. Rule status and progress automatically detected each time
+
+    PRE-CREATION REQUIREMENTS (Original):
     1. All inputs must be collected through systematic workflow
-    2. User must provide input overview confirmation
+    2. User must provide input overview confirmation  
     3. All template inputs processed via collect_template_input()
     4. All parameter values collected and verified
     5. User must confirm all input values before rule creation
     6. Primary application type must be determined
-    7. Rule structure must be shown to user in YAML format for approval
+    7. Rule structure must be shown to user in YAML format for final approval
 
-    RULE PREVIEW REQUIREMENT:
-    - ALWAYS show complete rule structure in YAML format to user before creation
-    - Get explicit user confirmation: "Here's your rule structure: [YAML]. Create this rule? (yes/no)"
-    - Only proceed after user approves the rule structure
-    - Allow modifications if user requests changes
-
-    STEP 1 - PRIMARY APPLICATION TYPE DETERMINATION:
+    STEP 1 - PRIMARY APPLICATION TYPE DETERMINATION (Preserved):
     Before creating rule structure, determine primary application type:
     1. Collect all unique appType tags from selected tasks
     2. Filter out 'nocredapp' (dummy placeholder value)
     3. Handle app type selection:
         - If only one valid appType: Use automatically
         - If multiple valid appTypes: Ask user to choose primary application
-            "I found multiple application types in your selected tasks:
-            - AppType1 (used by Task1, Task2)
-            - AppType2 (used by Task3)
-            Which application type should be the primary one for this rule?"
         - If no valid appTypes (all were nocredapp): Use 'generic' as default
     4. Set primary app type for appType, annotateType, and app fields (single value arrays)
 
-    STEP 2 - RULE STRUCTURE WITH TASK ALIASES:
+    STEP 2 - RULE STRUCTURE WITH TASK ALIASES (Preserved):
     ```yaml
         apiVersion: rule.policycow.live/v1alpha1
         kind: rule
@@ -1285,12 +1524,11 @@ def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
             purpose: Clear statement based on user breakdown
             description: Detailed description combining all steps
             labels:
-            appType: [PRIMARY_APP_TYPE_FROM_STEP_1] # Single value array
-            environment: [logical] # Array
-            execlevel: [app] # Array
+                appType: [PRIMARY_APP_TYPE_FROM_STEP_1] # Single value array
+                environment: [logical] # Array
+                execlevel: [app] # Array
             annotations:
-            annotateType: [PRIMARY_APP_TYPE_FROM_STEP_1] # Same as appType
-            app: [PRIMARY_APP_TYPE_FROM_STEP_1] # Same as appType
+                annotateType: [PRIMARY_APP_TYPE_FROM_STEP_1] # Same as appType    
         spec:
             inputs:
               InputName: [ACTUAL_USER_VALUE_OR_FILE_URL]  # Use original or unique names based on conflicts
@@ -1311,170 +1549,271 @@ def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
               type: task
               appTags:
                 appType: [COPY_FROM_TASK_DEFINITION] # Keep original task appType
+                environment: [logical] # Array
+                execlevel: [app] # Array
               purpose: What this task does for Step 1
             - name: Step2TaskName
               alias: validation # Another meaningful alias
               type: task
               appTags:
                 appType: [COPY_FROM_TASK_DEFINITION]
+                environment: [logical] # Array
+                execlevel: [app] # Array
               purpose: What this task does for validation
             ioMap:
             - step1.Input.TaskInput:=*.Input.InputName  # Use task aliases in I/O mapping
             - validation.Input.TaskInput:=step1.Output.TaskOutput
-            - '*.Output.FinalOutput:=validation.Output.TaskOutput'
             # MANDATORY: Always include these three outputs from the last task
+            - '*.Output.FinalOutput:=validation.Output.TaskOutput'
             - '*.Output.CompliancePCT_:=validation.Output.CompliancePCT_'    # Compliance percentage from last task
             - '*.Output.ComplianceStatus_:=validation.Output.ComplianceStatus_'  # Compliance status from last task
             - '*.Output.LogFile:=validation.Output.LogFile'  # Log file from last task
     ```
 
-    STEP 3 - I/O MAPPING WITH TASK ALIASES:
+    STEP 3 - I/O MAPPING WITH TASK ALIASES (Preserved):
+    - Use golang-style assignment: destination:=source
+    - 3-part structure: PLACE.DIRECTION.ATTRIBUTE_NAME
+    - Always use EXACT attribute names from task specifications
+    - Use meaningful task aliases instead of generic names
+    - Ensure sequential data flow: Rule → Task1 → Task2 → Rule
+    - Mandatory compliance outputs from last task
 
-    CRITICAL SYNTAX: Use golang-style assignment: destination:=source
-
-    3-PART STRUCTURE: PLACE.DIRECTION.ATTRIBUTE_NAME
-
-    1. PLACE (First part):
-        - '*' = Rule level (inputs/outputs that user provides/receives)
-        - 'step1', 'validation', 'processing', etc. = Task alias (meaningful descriptors)
-
-    2. DIRECTION (Second part):
-        - 'Input' = Input parameters/data going INTO task
-        - 'Output' = Output results/data coming FROM task
-
-    3. ATTRIBUTE_NAME (Third part):
-        - Exact name of input/output attribute from task specifications
-        - Must match actual parameter names from task definitions (case-sensitive)
-        - Use EXACT names from tasks://details/{task_name} specifications
-
-    MAPPING RULES WITH TASK ALIASES:
-    - *.Input.X:=source = Rule-level input X gets value from source
-    - *.Output.Y:=source = Rule-level output Y gets value from source
-    - step1.Input.Z:=source = Task with alias 'step1' input Z gets value from source
-    - validation.Input.A:=step1.Output.B = Task 'validation' input A gets value from task 'step1' output B
-
-    SEQUENTIAL FLOW PATTERN WITH MEANINGFUL ALIASES:
-    ```
-    ioMap:
-    # Rule inputs to first task
-    - step1.Input.DataFile:=*.Input.ConfigFile   # Rule input "ConfigFile" → step1 input "DataFile"
-    - step1.Input.Settings:=*.Input.UserSettings # Rule input "UserSettings" → step1 input "Settings"
-
-    # First task output to validation task input
-    - validation.Input.InputData:=step1.Output.ProcessedData     # step1 output → validation input
-    - validation.Input.Rules:=*.Input.ValidationRules           # Rule input → validation input
-
-    # Validation task output to processing task input  
-    - processing.Input.ValidatedData:=validation.Output.CleanData # validation output → processing input
-
-    # Final task outputs to rule outputs
-    - '*.Output.FinalReport:=processing.Output.Report'          # processing output → Rule output
-    - '*.Output.ProcessedRecords:=processing.Output.Records'    # processing output → Rule output
-    ```
-
-    CRITICAL I/O MAPPING RULES:
-    - Always use EXACT attribute names from task input/output specifications
-    - Use meaningful task aliases instead of generic t1, t2, etc.
-    - Ensure data flows sequentially: Rule → Task1 → Task2 → Task3 → Rule
-    - Rule inputs (*.Input.X) come from user-provided values OR uploaded file URLs
-    - Rule outputs (*.Output.Y) are final results user receives
-    - Task aliases must match exactly with task aliases in tasks section
-    - Use quotes around mappings that start with *.Output to handle YAML parsing
-    - Validate attribute names against task specifications before creating mappings
-    - For FILE inputs: Use uploaded file URLs as values
-    - For HTTP_CONFIG inputs: Use uploaded file URLs as values
-    - For PARAMETER inputs: Use actual user-provided values
-
-    STEP 4 - INPUT VALUE HANDLING:
-    - FILE inputs: Use file URLs from upload (e.g., "<<MINIO_FILE_PATH>>/file_12345_config.json")
-    - HTTP_CONFIG inputs: Use file URLs from upload (e.g., "<<MINIO_FILE_PATH>>/file_12345_http_config.json")
-    - STRING inputs: Use actual user values (e.g., "threshold_75")
-    - INT inputs: Use converted integer values (e.g., 100)
-    - BOOLEAN inputs: Use boolean values (e.g., true)
-    - All inputs must have actual values, never use placeholder or default values
-
-    STEP 5 - RULE STRUCTURE CONFIRMATION:
-    - Get explicit confirmation from user before creating rule
-    - Show complete rule structure in YAML format
-    - Wait for user approval before proceeding
-
-    STEP 6 - PRIMARY APPLICATION TYPE RULES:
-    - ALWAYS extract all appType tags from selected tasks
-    - ALWAYS filter out 'nocredapp' (dummy placeholder)
-    - SINGLE VALUE ONLY: appType, annotateType, and app fields must contain only one value in array
-    - IF multiple valid appTypes: Ask user to choose primary application type
-    - IF only one valid appType: Use it automatically
-    - IF no valid appTypes: Default to 'generic'
-    - SAME VALUE: appType, annotateType, and app must all use same primary app type
-    - TASK appTags: Keep original task appType values in individual task definitions
-
-    VALIDATION CHECKLIST BEFORE CALLING create_rule():
-    □ Input overview presented to user and confirmed
-    □ All template inputs processed through collect_template_input()
-    □ File URLs received for all template inputs and used as input values
-    □ Parameter values collected for non-template inputs
-    □ All input values summarized and verified by user
-    □ Primary app type determined (single value)
-    □ I/O mappings use exact attribute names from task specs
-    □ Task aliases are meaningful and descriptive
-    □ Sequential data flow established
-    □ Rule structure shown to user in YAML format
-    □ User confirmed rule structure before creation
+    VALIDATION CHECKLIST (Preserved):
+    □ Rule structure validation against schema
+    □ Task alias validation in I/O mappings
+    □ Primary app type determination
+    □ Input/output specifications validation
+    □ Mandatory compliance outputs present
+    □ Sequential data flow in I/O mappings
 
     Args:
-        rule_structure: Complete rule structure in the required format with task aliases
+        rule_structure: Complete rule structure with any level of completion
 
     Returns:
-        Result of rule creation including status and rule ID
+        Result of rule creation including auto-detected status and completion level
     """
 
-    # Validate rule structure
-    validation_result = rule.validate_rule_structure(rule_structure)
-    if not validation_result["valid"]:
-        return {"success": False, "error": "Invalid rule structure", "validation_errors": validation_result["errors"]}
-
-    # Additional validation for task aliases in I/O mappings
-    tasks_section = rule_structure.get("spec", {}).get("tasks", [])
-    io_map = rule_structure.get("spec", {}).get("ioMap", [])
-    
-    # Extract task aliases from tasks section
-    valid_aliases = set()
-    for task in tasks_section:
-        if "alias" in task:
-            valid_aliases.add(task["alias"])
-    
-    # Validate I/O mappings use correct task aliases
-    for mapping in io_map:
-        if "." in mapping and ":=" in mapping:
-            left_side = mapping.split(":=")[0].strip()
-            right_side = mapping.split(":=")[1].strip()
-            
-            # Check left side for task alias
-            if not left_side.startswith("*."):
-                alias_part = left_side.split(".")[0]
-                if alias_part not in valid_aliases and alias_part != "*":
-                    return {
-                        "success": False,
-                        "error": f"Unknown task alias '{alias_part}' in I/O mapping: {mapping}. Valid aliases: {list(valid_aliases)}"
-                    }
-            
-            # Check right side for task alias  
-            if not right_side.startswith("*."):
-                alias_part = right_side.split(".")[0]
-                if alias_part not in valid_aliases and alias_part != "*":
-                    return {
-                        "success": False,
-                        "error": f"Unknown task alias '{alias_part}' in I/O mapping: {mapping}. Valid aliases: {list(valid_aliases)}"
-                    }
-
-    # Generate YAML preview for user confirmation
-    yaml_preview = rule.generate_yaml_preview(rule_structure)
-
-    # Create the rule (integrate with your actual API here)
     try:
+        if rule.is_valid_key(rule_structure,"spec") and  rule.is_valid_array(rule_structure["spec"],"tasks"):
+            tasks = rule_structure["spec"]["tasks"]
+            for task in tasks:
+                if rule.is_valid_key(task,"aliasref") and not rule.is_valid_key(task,"alias"):
+                    task["alias"] = task["aliasref"]
+            rule_structure["spec"]["tasks"] = tasks
+        # Validate rule structure (preserve original validation)
+        validation_result = rule.validate_rule_structure(rule_structure)
+        if not validation_result["valid"]:
+            return {"success": False, "error": "Invalid rule structure", "validation_errors": validation_result["errors"]}
+
+        # Additional validation for task aliases in I/O mappings (preserved from original)
+        tasks_section = rule_structure.get("spec", {}).get("tasks", [])
+        io_map = rule_structure.get("spec", {}).get("ioMap", [])
+        
+        # Extract task aliases from tasks section for validation
+        valid_aliases = set()
+        for task in tasks_section:
+            if "alias" in task:
+                valid_aliases.add(task["alias"])
+        
+        # Validate I/O mappings use correct task aliases (preserved validation)
+        io_mapping_errors = []
+        for mapping in io_map:
+            if "." in mapping and ":=" in mapping:
+                left_side = mapping.split(":=")[0].strip()
+                right_side = mapping.split(":=")[1].strip()
+                
+                # Check left side for task alias
+                if not left_side.startswith("*."):
+                    alias_part = left_side.split(".")[0]
+                    if alias_part not in valid_aliases and alias_part != "*":
+                        return {
+                            "success": False,
+                            "error": f"Unknown task alias '{alias_part}' in I/O mapping: {mapping}. Valid aliases: {list(valid_aliases)}"
+                        }
+                
+                # Check right side for task alias  
+                if not right_side.startswith("*."):
+                    alias_part = right_side.split(".")[0]
+                    if alias_part not in valid_aliases and alias_part != "*":
+                        return {
+                            "success": False,
+                            "error": f"Unknown task alias '{alias_part}' in I/O mapping: {mapping}. Valid aliases: {list(valid_aliases)}"
+                        }
+
+                # Validate right side (source) output exists in task
+                if not right_side.startswith("*."):
+                    parts = right_side.split(".")
+                    if len(parts) >= 3:  # task_alias.Output.output_name format
+                        source_task_alias = parts[0]
+                        direction = parts[1]
+                        output_name = parts[2]
+                        
+                        if direction == "Output":
+                            # Find the task with this alias
+                            source_task = None
+                            for task in tasks_section:
+                                if task.get("alias") == source_task_alias:
+                                    source_task = task
+                                    break
+                            
+                            if source_task:
+                                # Get task details to validate output exists
+                                task_name = source_task.get("name")
+                                task_details = get_task_details(task_name)
+                                
+                                if task_details.get("error"):
+                                    io_mapping_errors.append(f"Could not validate task '{task_name}': {task_details['error']}")
+                                else:
+                                    # Check if the output exists in task definition
+                                    task_outputs = task_details.get("outputs", [])
+                                    valid_output_names = [out["name"] for out in task_outputs]
+                                    
+                                    if output_name not in valid_output_names:
+                                        io_mapping_errors.append(
+                                            f"Output '{output_name}' not found in task '{task_name}'. "
+                                            f"Valid outputs: {valid_output_names}"
+                                        )  
+
+        # Return validation errors if any I/O mapping issues found
+        if io_mapping_errors:
+            return {
+                "success": False,
+                "error": "I/O mapping validation failed",
+                "validation_errors": io_mapping_errors,
+                "message": "Some I/O mappings reference outputs that don't exist in the specified tasks"
+            }    
+
+        # NEW: AUTOMATIC STATUS DETECTION based on rule content
+        spec = rule_structure.get("spec", {})
+        meta = rule_structure.get("meta", {})
+
+        # MANDATORY: Fetch application class name for the primary app type
+        primary_app_type_array = meta.get("labels", {}).get("appType", [])
+        primary_app_type = primary_app_type_array[0] if primary_app_type_array else None
+        applications_response = fetch_applications()
+        application_class_name = None
+
+        # Find matching application class name for primary app type
+        if applications_response and applications_response.get("success") and primary_app_type:
+            for app in applications_response.get("applications"):
+                app_type = app.get("app_type")
+                # Check if any app type from primary_app_type matches any app type from the application
+                if app_type == primary_app_type:
+                    application_class_name = app.get("application_class_name")
+                    break
+            # Add app    
+            rule_structure["meta"]["app"] = application_class_name     
+        
+           
+        
+        # Analyze rule completeness for auto-detection
+        tasks = spec.get("tasks", [])
+        inputs = spec.get("inputs", {})
+        inputs_meta = spec.get("inputsMeta__", [])
+        io_map = spec.get("ioMap", [])
+        outputs_meta = spec.get("outputsMeta__", [])
+        
+        # Check for mandatory compliance outputs
+        mandatory_outputs = ["CompliancePCT_", "ComplianceStatus_", "LogFile"]
+        has_mandatory_outputs = all(
+            any(output.get("name") == req_output for output in outputs_meta) 
+            for req_output in mandatory_outputs
+        )
+        
+        # Completion analysis
+        completion_analysis = {
+            "has_tasks": len(tasks) > 0,
+            "has_inputs": len(inputs) > 0 and any(
+                (isinstance(value, str) and value.strip() != "" and value != "<<MINIO_FILE_PATH>>" and not value.startswith("<<")) or
+                (isinstance(value, bool)) or
+                (isinstance(value, (int, float)) and value is not None)
+                for value in inputs.values()
+            ),
+            "has_inputs_meta": len(inputs_meta) > 0,
+            "has_io_mapping": len(io_map) > 0,
+            "has_mandatory_outputs": has_mandatory_outputs,
+            "tasks_count": len(tasks),
+            "inputs_collected": sum(1 for value in inputs.values() if (
+                (isinstance(value, str) and value.strip() != "" and value != "<<MINIO_FILE_PATH>>" and not value.startswith("<<")) or
+                (isinstance(value, bool)) or
+                (isinstance(value, (int, float)) and value is not None)
+            )),
+            "inputs_meta_count": len(inputs_meta),
+            "io_mappings_count": len(io_map),
+            "inputs_match_metadata": len(inputs) == len(inputs_meta),
+            "total_inputs_needed": len(inputs_meta),  # Total inputs from inputsMeta__
+            "inputs_completion_percentage": (sum(1 for value in inputs.values() if (
+                (isinstance(value, str) and value.strip() != "" and value != "<<MINIO_FILE_PATH>>" and not value.startswith("<<")) or
+                (isinstance(value, bool)) or
+                (isinstance(value, (int, float)) and value is not None)
+            )) / max(len(inputs_meta), 1)) * 100 if inputs_meta else 0
+        }
+        
+        # Enhanced automatic status determination
+        if (completion_analysis["has_io_mapping"] and 
+            completion_analysis["inputs_collected"] == completion_analysis["inputs_meta_count"] and  # All inputsMeta__ inputs collected
+            completion_analysis["has_tasks"] and
+            completion_analysis["has_mandatory_outputs"] and
+            completion_analysis["inputs_match_metadata"]):
+            auto_status = "ACTIVE"
+            creation_phase = "completed"
+            progress_percentage = 100
+            
+        elif (completion_analysis["inputs_collected"] == completion_analysis["inputs_meta_count"] and  # All inputsMeta__ inputs collected
+            completion_analysis["has_tasks"] and
+            completion_analysis["has_mandatory_outputs"] and
+            completion_analysis["inputs_match_metadata"]):
+            auto_status = "READY_FOR_CREATION"  
+            creation_phase = "inputs_collected"
+            progress_percentage = 85
+            
+        elif completion_analysis["has_tasks"]:
+            if completion_analysis["inputs_collected"] > 0:  # Some inputs have values
+                auto_status = "DRAFT"
+                creation_phase = "collecting_inputs"
+                # Calculate progress: 25% base + (input completion percentage * 0.6)
+                progress_percentage = min(25 + int(completion_analysis["inputs_completion_percentage"] * 0.6), 85)
+            else:
+                auto_status = "DRAFT"
+                creation_phase = "tasks_selected"
+                progress_percentage = 25
+        else:
+            auto_status = "DRAFT"
+            creation_phase = "initialized"
+            progress_percentage = 5
+
+        # Set detected status in meta (don't override if explicitly provided and valid)
+        if "status" not in meta or meta["status"] not in ["DRAFT", "READY_FOR_CREATION", "ACTIVE"]:
+            rule_structure["meta"]["status"] = auto_status
+        if "creation_phase" not in meta:
+            rule_structure["meta"]["creation_phase"] = creation_phase
+
+        # Add automatic timestamps (preserve existing if present)
+        current_time = datetime.now().isoformat()
+        if "created_at" not in meta:
+            rule_structure["meta"]["created_at"] = current_time
+        rule_structure["meta"]["last_updated"] = current_time
+
+        # Add/update progress tracking with detailed analysis
+        rule_structure["meta"]["progress"] = {
+            "percentage": progress_percentage,
+            "phase": creation_phase,
+            "completion_analysis": completion_analysis,
+            "next_steps": determine_next_steps(creation_phase, completion_analysis),
+            "estimated_completion": estimate_completion_time(completion_analysis)
+        }
+
+        # Check if rule already exists (for updates vs creation)
+        existing_rule = fetch_rule(rule_structure["meta"]["name"])
+        is_update = existing_rule["success"]
+
+        # Generate YAML preview for user confirmation (preserved from original)
+        yaml_preview = rule.generate_yaml_preview(rule_structure)
+
+        # Call your existing create_rule_api (preserved)
         result = rule.create_rule_api(rule_structure)
 
-        # Auto-generate design notes using internal template after rule creation
+        # Auto-generate design notes info (preserved from original)
         design_notes_result = {
             "auto_generated": True, 
             "message": "Design notes will be auto-generated using comprehensive internal template",
@@ -1486,23 +1825,94 @@ def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
             "message": "README will be auto-generated using a comprehensive internal template",
             "next_action": "Call create_rule_readme(rule_name, readme_content) to generate and save the README"
         }
+        
+        rule_name = rule_structure["meta"]["name"]
+
+        #Add MCP tag to the rule with proper error handling
+        try:
+            tag_result = add_rule_tag(rule_name)
+            if not tag_result.get("success", False):
+                tag_message = tag_result.get("message", "Unknown error occurred")
+                tag_status = {
+                    "tagged": False,
+                    "message": f"Rule created successfully but MCP tag addition failed: {tag_message}"
+                }
+            else:
+                tag_status = {
+                    "tagged": True,
+                    "message": tag_result.get("message", "MCP tag added successfully")
+                }
+        except Exception as e:
+            tag_status = {
+                "tagged": False,
+                "message": f"Rule created successfully but MCP tag addition encountered an exception: {e}"
+            }
 
         return {
             "success": True,
             "rule_id": result["rule_id"],
-            "message": "Rule created successfully with meaningful task aliases",
+            "rule_name": rule_name,
+            "is_update": is_update,
+            "detected_status": auto_status,
+            "creation_phase": creation_phase,
+            "progress_percentage": progress_percentage,
+            "completion_analysis": completion_analysis,
+            "message": f"Rule {'updated' if is_update else 'created'} successfully with meaningful task aliases - Status: {auto_status} ({progress_percentage}% complete)",
             "rule_structure": rule_structure,
             "yaml_preview": yaml_preview,
             "timestamp": result.get("timestamp"),
-            "status": result.get("status", "created"),
+            "status": result.get("status", auto_status),
             "design_notes_info": design_notes_result,
             "readme_info": readme_info,
-            "next_step": "Call create_design_notes() to auto-generate comprehensive design notes. Call create_rule_readme() to auto-generate a comprehensive README file."
+            "tag_status": tag_status,
+            "next_step": determine_next_action(creation_phase, completion_analysis)
         }
+        
     except exception.CCowExceptionVO as e:
         return {"success": False, "error": f"Failed to create rule: {e.to_dict()}"}
     except Exception as e:
         return {"success": False, "error": f"Failed to create rule: {e}"}
+    
+
+
+def add_rule_tag(rule_name: str) -> Dict[str, Any]:
+    """
+    Add MCP tag to a rule.
+    
+    Args:
+        rule_name: Name of the rule to add tags to
+        
+    Returns:
+        Dict with tag addition results
+    """
+    try:
+        headers = wsutils.create_header()
+        
+        # Prepare request data for adding rule tags
+        request_data = {
+            "ruleNames": [rule_name],
+            "tags": ["MCP"],
+            "operation": "ADD"
+        }
+        
+        wsutils.post(
+            path=wsutils.build_api_url(endpoint=constants.URL_UPDATE_RULE_TAGS),
+            data=json.dumps(request_data),
+            header=headers
+        )
+
+        return {
+            "success": True,
+            "rule_name": rule_name,
+            "message": f"MCP tag added successfully to rule '{rule_name}'"
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "rule_name": rule_name,
+            "message": f"Error: {e}"
+        }
     
 
 @mcp.tool()
@@ -1785,10 +2195,20 @@ def fetch_rule(rule_name: str,include_read_me: bool = False) -> Dict[str, Any]:
         )
         
         if rule.is_valid_array(get_rule_resp, "items"):
+            rule_structure = get_rule_resp["items"][0]
+            if rule.is_valid_array(rule_structure["spec"],"ioMap"):
+                # INFO : From the backend we're setting default values in the ioMap if the values are missing. For MCP flow, we're nullyfying this flow since we have validation for this. 
+                if {'t1.Input.BucketName:=*.Input.BucketName', '*.Output.CompliancePCT_:=t1.Output.CompliancePCT_', '*.Output.ComplianceStatus_:=t1.Output.ComplianceStatus_', '*.Output.LogFile:=t1.Output.LogFile'}==set(rule_structure["spec"]["ioMap"]):
+                    rule_structure["spec"]["ioMap"]=[]
+
+            if rule.is_valid_key(rule_structure,"apiVersion") and rule_structure["apiVersion"]=="v1alpha1":
+                rule_structure['apiVersion']="rule.policycow.live/v1alpha1"
+
+
             return {
                 "success": True,
                 "rule_name": rule_name,
-                "rule_structure": get_rule_resp["items"][0],  # Complete rule as dictionary
+                "rule_structure": rule_structure,  # Complete rule as dictionary
                 "message": f"Rule '{rule_name}' retrieved successfully"
             }
         
@@ -1805,7 +2225,74 @@ def fetch_rule(rule_name: str,include_read_me: bool = False) -> Dict[str, Any]:
             "error": f"Failed to fetch rule '{rule_name}': {e}",
             "rule_name": rule_name
         }
+    
+@mcp.tool()
+def fetch_cc_rule_by_name(rule_name: str) -> Dict[str, Any]:
+    """
+    Fetch rule details by rule name from the **compliancecow**.
 
+    Args:
+        rule_name: Rule name of the rule to retrieve
+        
+    Returns:
+        Dict containing complete rule structure and metadata
+    """
+    
+    try:
+
+        rule_response = rule.fetch_cc_rule_by_name(rule_name)
+        logger.debug(f"fetch_cc_rule_by_name: rule_output: {rule_response}\n")
+
+        if len(rule_response) == 0:
+            return {
+                "success": False,
+                "rule_name": rule_name,
+                "error": f"Rule '{rule_name}' not found in ComplianceCow. This means the rule is not published or does not exist in ComplianceCow.",
+                "next_actions": ["publish_rule", "cancel"]
+            }
+
+        return rule_response
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to fetch rule with id '{rule_name}': {str(e)}",
+            "rule_name": rule_name
+        }
+
+@mcp.tool()
+def fetch_cc_rule_by_id(rule_id: str) -> Dict[str, Any]:
+    """
+    Fetch rule details by rule id from the **compliancecow**.
+
+    Args:
+        rule_id: Rule Id of the rule to retrieve
+        
+    Returns:
+        Dict containing complete rule structure and metadata
+    """
+    
+    try:
+
+        rule_response = rule.fetch_cc_rule_by_id(rule_id)
+        logger.debug(f"fetch_cc_rule_by_id: rule_output: {rule_response}\n")
+
+        if len(rule_response) == 0:
+            return {
+                "success": False,
+                "rule_id": rule_id,
+                "error": f"Rule '{rule_id}' not found in ComplianceCow. This means the rule is not published or does not exist in ComplianceCow.",
+                "next_actions": ["publish_rule", "cancel"]
+            }
+
+        return rule_response
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to fetch rule with id '{rule_id}': {str(e)}",
+            "rule_id": rule_id
+        }
 
 @mcp.tool()
 def fetch_rule_design_notes(rule_name: str) -> Dict[str,Any]:
@@ -2343,11 +2830,22 @@ def get_rules_summary() -> Dict[str, Any]:
 
     PURPOSE:
     - To analyze the user's use case and avoid duplicate rule creation by identifying the most suitable existing rule based on its name, description, and purpose.
+    - **NEW: Check for partially developed rules in local system before allowing new rule creation**
+    - **NEW: Present resumption options if incomplete rules are found to prevent duplicate work**
 
     WHEN TO USE:
     - As the first step before initiating a new rule creation process
-    - When the user wants to retrieve and review all available rules
+    - When the user wants to retrieve and review all available rules in the **catalog**
     - When verifying if a similar rule already exists that can be reused or customized
+    - **NEW: When checking for incomplete local rules that should be resumed instead of creating new ones**
+
+    🚫 DO NOT USE THIS TOOL FOR:
+    - Checking what rules are available in the ComplianceCow system.
+    - This tool only works with the **rule catalog** (not the entire ComplianceCow system).
+    - The catalog contains only rules that are published and available for reuse in the catalog.
+    - For direct ComplianceCow system lookups, use dedicated system tools instead:
+    - `fetch_cc_rule_by_name`
+    - `fetch_cc_rule_by_id`
 
     WHAT IT DOES:
     - Retrieves the full list of rules from the catalog with simplified metadata (name, purpose, description)
@@ -2378,13 +2876,11 @@ def get_rules_summary() -> Dict[str, Any]:
         - If the README content does not match or is not suitable, clearly inform the user and recommend either modifying the logic significantly or proceeding with a completely new rule from scratch
 
     IF NO SUITABLE RULE IS FOUND:
-
     - Clearly informs the user that no relevant rule matches the proposed use case
     - Suggests continuing with new rule creation
     - Optionally highlights similar rules that can be used as a reference
 
     MANDATORY STEPS:
-
     README VALIDATION:
     - Always retrieve and analyze `readmeData` from `fetch_rule()`.
     - Ensure the rule's logic, behavior, and intended use align with the user's proposed use case.
@@ -2561,6 +3057,7 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
     RULE EXECUTION WORKFLOW:
 
     PREREQUISITE STEPS:
+    0. **MANDATORY: Check rule status to ensure rule is fully developed before execution**
     1. User chooses to execute rule after creation
     2. Extract unique appTags from selected tasks → get user confirmation
     3. For each tag:
@@ -2570,9 +3067,9 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
         ```json
         [
             {
-                "applicationType": "[appType (split by :: and use the first value)]",
+                "applicationType": "[application_class_name from fetch_applications(appType)]",
                 "applicationId": "[Actual ID]",
-                "appTags": "[Complete object from rule spec.tasks.appTags]"
+                "appTags": "[Complete object from rule spec.tasks[].appTags]"
             }
         ]
         ```
@@ -2584,13 +3081,13 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
         ```json
         [
             {
-                "applicationType": "[appType (split by :: and use the first value)]",
+                "applicationType": "[application_class_name from fetch_applications(appType)]",
                 "appURL": "[Application URL from user (optional - can be empty string)]",
                 "credentialType": "[User chosen credential type]",
                 "credentialValues": {
                     "[User provided credentials]"
                 },
-                "appTags": "[Complete object from rule spec.tasks.appTags]"
+                "appTags": "[Complete object from rule spec.tasks[].appTags]"
             }
         ]
         ```
@@ -2609,6 +3106,10 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
         c. Ask: "View file contents? (yes/no)"
         d. If yes: Call fetch_output_file() for each requested file
         e. Display results with formatting
+    9. Rule Publication (optional):
+    - Ask user: "Do you want to publish this rule to make it available in ComplianceCow system? (yes/no)"
+    - If yes: Call publish_rule() to publish the rule
+    - If no: End workflow    
 
     Args:
         rule_name: Rule to execute
@@ -2642,7 +3143,7 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
             "success": True, 
             "rule_name": rule_name, 
             "execution_id": execution_result.get("id"), 
-            "message": f"Rule '{rule_name}' started executing.",
+            "message": f"Rule '{rule_name}' started executing."
         }
 
     except Exception as e:
@@ -3024,3 +3525,1060 @@ def fetch_output_file(file_url: str) -> Dict[str, Any]:
             "file_url": file_url,
             "error": f"Failed to fetch file: {e}"
         }
+
+
+@mcp.tool()
+def fetch_applications() -> Dict[str, Any]:
+    """ 
+    Fetch all available applications from the system.
+    
+    Returns:
+        Dict containing list of applications with their details
+    """
+    try:
+        applications = []
+        headers = wsutils.create_header()
+        
+        get_app_resp = wsutils.get(
+            path=wsutils.build_api_url(endpoint=constants.URL_FETCH_APPLICATIONS),
+            header=headers
+        )
+        
+        # Add null safety
+        items = get_app_resp.get("items", [])
+        if not items:
+            return {
+                "success": True,
+                "applications": [],
+                "message": "No applications found"
+            }
+        
+        for item in items:
+            meta = item.get("meta", {})
+            labels = meta.get("labels", {})
+            app_types = labels.get("appType", [])
+            
+            # Skip if no appType available
+            if not app_types:
+                continue
+                
+            applications.append({
+                "application_class_name": meta.get("name", "Unknown"),
+                "app_type": app_types[0]
+            })
+
+        return {
+            "success": True,
+            "applications": applications
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to fetch applications: {str(e)}",
+            "applications": []
+        }
+
+
+@mcp.tool()
+def check_applications_publish_status(app_info: List[Dict]) -> Dict[str, Any]:
+   """
+   Check publication status for each application in the provided list.
+
+   app_info structure is [{"name":["ACTUAL application_class_name"]}]
+   
+   Args:
+       app_info: List of application objects to check
+       
+   Returns:
+       Dict with publication status for each application.
+       Each app will have 'published' field: True if published, False if not.
+   """
+   try:
+       headers = wsutils.create_header()
+       
+       app_resp = wsutils.post(
+           path=wsutils.build_api_url(endpoint=constants.URL_FETCH_CC_APPLICATIONS),
+           data=json.dumps(app_info),
+           header=headers
+       )
+
+       if len(app_resp) > 0:
+           return {
+               "success": True,
+               "app_info": app_resp
+           }
+       else:
+           return {
+               "success": False,
+               "error": "No application details found",
+               "app_info": []
+           }
+
+   except Exception as e:
+       return {
+           "success": False,
+           "error": f"Failed to fetch application information: {str(e)}",
+           "app_info": []
+       }
+
+
+@mcp.tool()
+def check_rule_publish_status(rule_name: str) -> Dict[str, Any]:
+    """
+    Check if a rule is already published.
+
+    - If not published → publish the rule so it becomes available for control attachment  
+    - Once published, prompt the user:  
+      "Do you want to attach this rule to a ComplianceCow control? (yes/no)"  
+    - If yes → ask for assessment name and control alias to proceed with association  
+    - If no → end workflow  
+
+    Args:
+        rule_name: Name of the rule to check
+
+    Returns:
+        Dict with publication status and details
+    """
+    try:
+        headers = wsutils.create_header()
+        
+        # Prepare request data
+        request_data = {
+            "ruleName": rule_name,
+            "host": ""
+        }
+        
+        rule_resp = wsutils.post(
+            path=wsutils.build_api_url(endpoint=constants.URL_FETCH_CC_RULES),
+            data=json.dumps(request_data),
+            header=headers
+        )
+
+        # Check if response has items and if items list is not empty
+        if rule_resp and rule_resp.get("items") and len(rule_resp.get("items", [])) > 0:
+            return {
+                "success": True,
+                "published": True,
+                "rule_info": rule_resp.get("items"),
+                "message": f"Rule '{rule_name}' is already published"
+            }
+        else:
+            return {
+                "success": True,
+                "published": False,
+                "rule_info": [],
+                "message": f"Rule '{rule_name}' is not published"
+            }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "published": False,
+            "error": f"Failed to check rule publish status: {str(e)}",
+            "rule_info": []
+        }
+
+
+@mcp.tool()
+def publish_application(rule_name: str, app_info: List[Dict]) -> Dict[str, Any]:
+    """
+    Publish applications to make them available for rule execution.
+    
+    Args:
+        rule_name: Name of the rule these applications belong to
+        app_info: List of application objects to publish
+        
+    Returns:
+        Dict with publication results for each application
+    """
+    try:
+        headers = wsutils.create_header()
+        
+        # Prepare request data
+        request_data = {
+            "ruleName": rule_name,
+            "appDetails": app_info
+        }
+        
+        publish_resp = wsutils.post(
+            path=wsutils.build_api_url(endpoint=constants.URL_PUBLISH_APPLICATIONS),
+            data=json.dumps(request_data),
+            header=headers
+        )
+
+        if publish_resp and len(publish_resp) > 0:
+            # Separate successful and failed applications
+            successful_apps = [app for app in publish_resp if "Error" not in app]
+            failed_apps = [app for app in publish_resp if "Error" in app]
+            
+            if failed_apps:
+                failed_app_names = [app.get("appName", "Unknown") for app in failed_apps]
+                return {
+                    "success": False,
+                    "published": False,
+                    "error": f"Failed applications: {', '.join(failed_app_names)}",
+                    "successful_apps": successful_apps,
+                    "failed_apps": failed_apps,
+                    "message": f"Some applications failed to publish for rule '{rule_name}'"
+                }
+            else:
+                return {
+                    "success": True,
+                    "published": True,
+                    "successful_apps": successful_apps,
+                    "failed_apps": [],
+                    "message": f"All applications for rule '{rule_name}' published successfully"
+                }
+        else:
+            return {
+                "success": False,
+                "published": False,
+                "error": "No response received from publish endpoint",
+                "successful_apps": [],
+                "failed_apps": []
+            }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "published": False,
+            "error": f"Failed to publish applications: {e}",
+            "successful_apps": [],
+            "failed_apps": []
+        }
+    
+
+@mcp.tool()
+def publish_rule(rule_name: str, cc_rule_name: str = None) -> Dict[str, Any]:
+    """
+    Publish a rule to make it available for ComplianceCow system.
+
+    CRITICAL WORKFLOW RULES:
+    - **MANDATORY: Check rule status to ensure rule is fully developed before publishing**
+    - MUST FOLLOW THESE STEPS EXACTLY
+    - DO NOT ASSUME OR SKIP ANY STEPS
+    - APPLICATIONS FIRST, THEN RULE
+    - WAIT FOR USER AT EACH STEP
+    - NO SHORTCUTS OR BYPASSING ALLOWED
+
+    RULE PUBLISHING HANDLING:
+
+    WHEN TO USE:
+    - After successful rule creation
+    - User wants to make rule available for others
+    - Rule has been tested and validated
+
+    WORKFLOW (step-by-step with user confirmation):
+
+    1. Fetch applications and check status
+    - Call fetch_applications() to get available applications
+    - Extract appTypes from ALL tasks in rule spec.tasks[].appTags.appType - MUST TAKE ALL THE TASKS APPTYPE AND REMOVE DUPLICATES - CRITICAL: DO NOT SKIP ANY TASK APPTYPES
+    - Match ALL task appTypes with applications app_type to get application_class_name
+    - Call check_applications_publish_status() for ALL matched applications
+
+    2. Present consolidated applications with meaningful format
+    Applications for your rule:
+    [1] App Name | Type: xyz | Status: Published | Action: Republish
+    [2] App Name | Type: abc | Status: Not Published | Action: Publish
+    
+    Select applications to publish: ___
+    - MANDATORY: WAIT for user selection before proceeding to next step
+    - DO NOT CONTINUE without explicit user input
+    - BLOCK execution until user provides selection
+    - STOP HERE: Cannot proceed to step 3 without user response
+    - HALT WORKFLOW: Wait for user to select application numbers
+    - NEVER SKIP THIS STEP: User must select applications first
+    - ALWAYS ASK FOR SELECTION EVEN IF ALL APPLICATIONS ARE PUBLISHED
+
+    3. Publish selected applications (BLOCKED until step 2 complete)
+    - ENTRY REQUIREMENT: User selection from step 2 must be provided
+    - PREREQUISITE CHECK: Verify user provided application numbers
+    - CANNOT EXECUTE: Without completing step 2 user selection
+    - Get user selection numbers
+    - Call publish_application() for selected applications only
+    - Inform user whether successfully published or not
+    - CHECKPOINT: All applications must be published before rule steps
+
+    4. Check rule publication status (APPLICATIONS MUST BE COMPLETE FIRST)
+    - GATE KEEPER: Cannot proceed without application publishing completion
+    - MANDATORY PREREQUISITE: All application steps finished
+    - BLOCKED ACCESS: No rule operations until applications handled
+    - Call check_rule_publish_status()
+    - Check response valid field:
+        - True = Already published
+        - False = Not published
+
+    5. Handle rule publishing based on status
+    If valid=False (not published):
+    - Show: "Rule is not published. Do you want to publish it? (yes/no)"
+    - If yes: Proceed with publishing using current name
+    
+    If valid=True (already published):
+    - Show: "Rule is already published. Choose option:"
+        - [1] Republish with same name
+        - [2] Publish with another name
+    - Get user choice
+
+    6. Handle alternative name logic
+    If "another name" chosen:
+        1. Ask: "Enter new rule name: ___"
+        2. Call check_rule_publish_status(new_name)
+        3. If name exists: "Name already exists. Choose option:"
+            - [1] Use same name (republish)
+            - [2] Enter another name
+        4. If name available: Proceed with new name
+        5. Keep checking until user chooses available name or decides to republish existing
+
+    7. Final publication
+    - Call publish_rule() with confirmed name
+    - Inform user: "Published successfully" or "Publication failed"
+
+    8. Rule Association:
+        - Publishes the rule to make it available for control attachment
+        - Ask user: "Do you want to attach this rule to a ComplianceCow control? (yes/no)"
+        - If yes: Proceed to associate the rule with control and request assessment name and control alias from the user
+        - If no: End workflow
+
+    EXECUTION CONTROL MECHANISMS:
+    - STEP GATE: Each step requires completion before next
+    - USER GATE: Each step requires user input/confirmation
+    - EXECUTION BLOCKER: No tool calls without user response
+    - WORKFLOW ENFORCER: Steps cannot be skipped or assumed
+    - SEQUENTIAL LOCK: Must complete in exact order
+
+    Args:
+        rule_name: Name of the rule to publish
+        cc_rule_name: Optional alternative name for publishing
+        
+    Returns:
+        Dict with publication status and details
+    """
+    try:
+        headers = wsutils.create_header()
+        
+        # Prepare request data
+        request_data = {
+            "ruleName": rule_name
+        }
+        
+        # Add ccRuleName only if provided
+        if cc_rule_name:
+            request_data["ccRuleName"] = cc_rule_name
+        
+        publish_resp = wsutils.post(
+            path=wsutils.build_api_url(endpoint=constants.URL_PUBLISH_RULE),
+            data=json.dumps(request_data),
+            header=headers
+        )
+
+        if publish_resp and publish_resp.get("message") and  publish_resp.get("message") == "Rule has been published successfully":
+            return {
+                "success": True,
+                "published": True,
+                "rule_info": publish_resp.get("items"),
+                "message": f"Rule '{rule_name}' published successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "published": False,
+                "error": f"Rule '{rule_name}' failed to publish: {publish_resp}",
+                "rule_info": []
+            }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "published": False,
+            "error": f"Failed to publish rule: {str(e)}",
+            "rule_info": []
+        }
+    
+
+
+@mcp.tool()
+def fetch_assessments(categoryId: str = "", categoryName: str = "", assessmentName: str = "") -> vo.AssessmentListVO:
+    """
+    Fetch the list of available assessments in ComplianceCow.  
+
+    TOOL PURPOSE:
+    - Retrieves a list of available assessments if no specific match is provided.  
+    - Returns only basic assessment info (id, name, category) without the full control hierarchy.  
+    - Used to confirm the assessment name while attaching a rule to a specific control.  
+
+    Args:
+        categoryId (Optional[str]): Assessment category ID.  
+        categoryName (Optional[str]): Assessment category name.  
+        assessmentName (Optional[str]): Assessment name.  
+
+    Returns:
+        - assessments (List[Assessments]): A list of assessment objects, each containing:  
+            - id (str): Unique identifier of the assessment.  
+            - name (str): Name of the assessment.  
+            - category_name (str): Name of the category.  
+        - error (Optional[str]): An error message if any issues occurred during retrieval.  
+    """
+    try:
+        params = {
+            "fields": "basic",
+            "category_id": categoryId,
+            "category_name_contains": categoryName,
+            "name_contains": assessmentName
+        }
+
+        assessments = rule.get_assessments(params)
+        logger.debug("assessment_output: {}\n".format(assessments))
+        return assessments
+
+    except Exception:
+        return vo.AssessmentListVO(error="Facing internal error")
+
+@mcp.tool()
+def fetch_leaf_controls_of_an_assessment(assessment_id: str = "") -> Any:
+    """
+    To fetch the only the **leaf controls** for a given assessment.
+    If assessment_id is not provided use other tools to get the assessment and its id.
+    
+    Args:
+        - assessment_id (str, required): Assessment id or plan id.
+
+    Returns:
+        - controls (List[AutomatedControlVO]): List of controls
+            - id (str): Control ID.
+            - displayable (str): Displayable name or label.
+            - alias (str): Alias of the control.
+            - activationStatus (str): Activation status.
+            - ruleName (str): Associated rule name.
+            - assessmentId (str): Assessment identifier.
+        - error (Optional[str]): An error message if any issues occurred during retrieval.
+    """
+    try:
+        params = {
+            "fields": "basic",
+            "skip_prereq_ctrl_priv_check": "false",
+            "page": 1,
+            "page_size": 100,
+            "plan_id": assessment_id,
+            "is_leaf_control":True
+        }
+       
+        leaf_controls = rule.get_assessment_controls(params)
+        logger.debug(f"leaf_controls_output: {leaf_controls}\n")
+        
+        if isinstance(leaf_controls, list):
+            return leaf_controls
+        else:
+            return {"error": "Failed to fetch leaf controls"}
+    except Exception as e:
+        return  {"error": "Failed to fetch leaf controls"}
+
+    
+@mcp.tool()
+def verify_control_in_assessment(assessment_name: str, control_alias: str) -> Dict[str, Any]:
+    """
+    Verify the existence of a specific control by alias within an assessment and confirm it is a leaf control.
+
+    CONTROL VERIFICATION AND VALIDATION:
+    - Confirms the control with the specified alias exists in the given assessment.
+    - Validates that the control is a leaf control (eligible for rule attachment).
+    - Checks if a rule is already attached to the control.
+    - Returns control details and attachment status.
+
+    LEAF CONTROL IDENTIFICATION:
+    - A control is considered a leaf control if:
+    - leafControl = true, OR
+    - has no planControls array, OR
+    - planControls array is empty.
+    - Only leaf controls can have rules attached.
+    - If the control is not a leaf control, an error will be returned.
+
+    Args:
+        assessment_name: Name of the assessment.
+        control_alias: Alias of the control to verify.
+
+    Returns:
+        Dict containing control details, leaf status, and rule attachment info.
+    """
+   
+    try:
+
+        assessment_params = {
+            "fields": "basic",
+            "skip_prereq_ctrl_priv_check": "false",
+            "name": assessment_name,
+            "is_leaf_control":True
+        }
+        
+        assessments = rule.get_assessments(assessment_params)
+        logger.debug("assessment_output_for_control_checking: {}\n".format(assessments))
+
+        if len(assessments) == 0:
+            return {"error":f"The requested assessment named {assessment_name} was not found."}
+        
+        assessment = assessments[0]
+
+        control_params = {
+            "fields": "basic",
+            "skip_prereq_ctrl_priv_check": "false",
+            "page_size": 500,
+            "plan_id": assessment.id,
+            "is_leaf_control":True
+        }
+
+        leaf_controls = rule.get_assessment_controls(control_params)
+
+        if not leaf_controls or not isinstance(leaf_controls, list):
+            return {"error": f"No leaf controls found for assessment '{assessment_name}'."}
+        logger.debug(f"leaf_controls_output: {leaf_controls}\n")
+
+        for control in leaf_controls:
+            if str(control.alias) == control_alias:
+                if control.ruleId:
+                     return {
+                        "success": True,
+                        "assessment_name": assessment_name,
+                        "control_alias": control_alias,
+                        "control_info": control,
+                        "warning": f"Control '{control_alias}' already has a rule attached (Rule ID: {control.ruleId})",
+                        "message": f"Control found but already has rule attached. Options: 1) View existing rule details, 2) Override with new rule attachment",
+                        "next_actions": ["view_existing_rule", "override_attachment", "cancel"]
+                    }
+
+                return {
+                    "success": True,
+                    "assessment_name": assessment_name,
+                    "control_alias": control_alias,
+                    "control_info": control,
+                    "message": f"Leaf control '{control_alias}' found and available for rule attachment.",
+                    "ready_for_attachment": True
+                }
+            
+        return {
+            "success": False,
+            "assessment_name": assessment_name,
+            "control_alias": control_alias,
+            "control_info": control,
+            "error": f"Control alias '{control_alias}' was not found as a leaf control in assessment '{assessment_name}'.",
+            "message": f"The control alias '{control_alias}' is either not present or is not a leaf control in the specified assessment '{assessment_name}'. Please make sure you provide a valid, available leaf control alias.",
+            "next_actions": ["retry_with_valid_leaf_control", "cancel"]
+        }
+                
+    except Exception as e:
+        return {
+            "success": False,
+            "assessment_name": assessment_name,
+            "control_alias": control_alias,
+            "error": f"Failed to find control: {str(e)}",
+            "message": f"Error occurred while searching for the control **'{control_alias}'** in assessment **'{assessment_name}'**."
+        }
+
+
+@mcp.tool()
+def attach_rule_to_control(rule_id: str, assessment_name: str, control_alias: str, control_id: str,create_evidence: bool = True ) -> Dict[str, Any]:
+
+    """
+    Attach a rule to a specific control in an assessment.
+
+    🚨 CRITICAL EXECUTION BLOCKERS — DO NOT SKIP 🚨
+    Before **any** part of this tool can run, five preconditions MUST be met:
+
+    1. Control Verification:
+    - You MUST verify the control exists in the assessment by calling `verify_control_in_assessment()`.
+    - Verification must confirm the control is present, valid, and a leaf control.
+    - If verification fails → STOP immediately. Do not proceed.
+
+    2. Rule ID Resolution:
+    - If `rule_id` is a valid UUID → proceed.
+    - If `rule_id` is an alphabetic string → treat it as the rule name and resolve it to a UUID **using `fetch_cc_rule_by_name()`**.
+    - If resolution fails or `rule_id` is still not a UUID after this step → STOP immediately.
+    - Execution is STRICTLY PROHIBITED with a plain name.
+
+    3. Rule Publish Validation:
+    - You MUST check if the rule is published in ComplianceCow before proceeding.
+    - If the rule is not published → STOP immediately.  
+    - Published status is a hard requirement for attachment.
+
+    4. Evidence Creation Acknowledgment:
+    - Before proceeding, you MUST request confirmation from the user about `create_evidence`.
+    - Ask: "Do you want to auto-generate evidence from the rule output? (default: True)"
+    - Only proceed after the user explicitly acknowledges their choice.
+
+    5. Override Acknowledgment:
+    - If the control already has a rule attached, you MUST request user confirmation before overriding.
+    - Ask: "This control already has a rule attached. Do you want to override it? (yes/no)"
+    - Only proceed if the user explicitly confirms.
+
+    RULE ATTACHMENT WORKFLOW:
+    1. Perform control verification using `verify_control_in_assessment()` (MANDATORY).
+    2. Resolve rule_id using the CRITICAL EXECUTION BLOCKERS above (use `fetch_cc_rule_by_name()` when needed).
+    3. Validate that the rule is published in ComplianceCow.
+    4. Confirm evidence creation preference from the user (acknowledgment REQUIRED).
+    5. Check for existing rule attachments and request override acknowledgment if needed.
+    6. Attach rule to control.
+    7. Optionally create evidence for the control.
+
+    ATTACHMENT OPTIONS:
+    - create_evidence: Whether to create evidence along with rule attachment. 
+    Must be confirmed by the user before proceeding.
+
+    VALIDATION REQUIREMENTS:
+    - Control must be verified and confirmed as a leaf control.
+    - Rule must be published.
+    - Rule ID must be a valid UUID.
+    - Assessment and control must exist.
+    - User must acknowledge override before replacing an existing rule.
+
+    Args:
+        rule_id: ID of the rule to attach (UUID). If an alphabetic string is provided, 
+                it MUST be resolved to a UUID using `fetch_cc_rule_by_name()` before the tool proceeds.
+        assessment_name: Name of the assessment.
+        control_alias: Alias of the control.
+        control_id: ID of the control.
+        create_evidence: Whether to create auto-generated evidence from the rule output (default: True).
+                        ⚠️ MUST be confirmed by user acknowledgment before execution.
+
+    Returns:
+        Dict containing attachment status and details.
+    """
+
+    try:
+
+        body = {
+            "ruleId": rule_id,
+            "createEvidence":create_evidence
+        }
+        
+        response = rule.attach_rule_to_control_api(control_id,body)
+        
+        if response.get("success") or response.get("status") == "attached":
+            result = {
+                "success": True,
+                "rule_id": rule_id,
+                "assessment_name": assessment_name,
+                "control_alias": control_alias,
+                "control_id": control_id,
+                "attachment_status": "attached",
+                "evidence_created": create_evidence,
+                "message": f"Rule '{rule_id}' successfully attached to control '{control_alias}' in assessment '{assessment_name}'"
+            }
+            
+            if create_evidence:
+                result["evidence_info"] = response.get("evidenceInfo", {})
+                result["message"] += " with evidence created."
+            
+            return result
+        else:
+            return {
+                "success": False,
+                "rule_id": rule_id,
+                "assessment_name": assessment_name,
+                "control_alias": control_alias,
+                "error": response.get("error", "Failed to attach rule to control"),
+                "message": f"Failed to attach rule '{rule_id}' to control '{control_alias}'"
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "rule_name": rule_id,
+            "assessment_name": assessment_name,
+            "control_alias": control_alias,
+            "error": f"Failed to attach rule to control: {str(e)}",
+            "message": f"Error occurred while attaching rule to control"
+        }
+
+
+@mcp.tool()
+def check_rule_status(rule_name: str) -> Dict[str, Any]:
+    """
+    Quick status check showing what's been collected and what's missing.
+    Perfect for resuming in new chat windows.
+
+    ENHANCED WITH AUTO-INFERENCE STATUS ANALYSIS:
+    - Ignores stored status/phase fields and analyzes actual rule structure
+    - Auto-detects completion status based on rule content (same logic as create_rule)
+    - Calculates real-time progress percentage from actual components
+    - Determines next actions based on what's actually missing
+    - Provides accurate resumption guidance regardless of stored metadata
+    - Perfect for cross-chat resumption with reliable state detection
+
+    AUTO-INFERENCE LOGIC:
+    - Analyzes spec.tasks, spec.inputs, spec.inputsMeta__, spec.ioMap, spec.outputsMeta__
+    - Calculates completion based on actual content, not stored fields
+    - Determines status: DRAFT → READY_FOR_CREATION → ACTIVE
+    - Provides accurate progress: 5% → 25% → 85% → 100%
+    - Identifies exactly what components are missing
+
+    Args:
+        rule_name: Name of the rule to check status for
+
+    Returns:
+        Dict with auto-inferred status information and accurate next action recommendations
+    """
+    
+    try:
+        current_rule = fetch_rule(rule_name)
+        if not current_rule["success"]:
+            return {
+                "success": False, 
+                "error": f"Rule '{rule_name}' not found. Start new rule creation?",
+                "suggested_action": "create_new_rule"
+            }
+        
+        rule_structure = current_rule["rule_structure"]
+        meta = rule_structure.get("meta", {})
+        spec = rule_structure.get("spec", {})
+        
+        # AUTO-INFERENCE: Analyze actual rule structure content (same logic as create_rule)
+        tasks = spec.get("tasks", [])
+        inputs = spec.get("inputs", {})
+        inputs_meta = spec.get("inputsMeta__", [])
+        io_map = spec.get("ioMap", [])
+        outputs_meta = spec.get("outputsMeta__", [])
+        
+        # Check for mandatory compliance outputs
+        mandatory_outputs = ["CompliancePCT_", "ComplianceStatus_", "LogFile"]
+        has_mandatory_outputs = all(
+            any(output.get("name") == req_output for output in outputs_meta) 
+            for req_output in mandatory_outputs
+        )
+        
+        # Real-time completion analysis based on actual content
+        completion_analysis = {
+            "has_tasks": len(tasks) > 0,
+            "has_inputs": len(inputs) > 0 and any(
+                (isinstance(value, str) and value.strip() != "" and value != "<<MINIO_FILE_PATH>>" and not value.startswith("<<")) or
+                (isinstance(value, bool)) or
+                (isinstance(value, (int, float)) and value is not None)
+                for value in inputs.values()
+            ),
+            "has_inputs_meta": len(inputs_meta) > 0,
+            "has_io_mapping": len(io_map) > 0,
+            "has_mandatory_outputs": has_mandatory_outputs,
+            "tasks_count": len(tasks),
+            "inputs_collected": sum(1 for value in inputs.values() if (
+                (isinstance(value, str) and value.strip() != "" and value != "<<MINIO_FILE_PATH>>" and not value.startswith("<<")) or
+                (isinstance(value, bool)) or
+                (isinstance(value, (int, float)) and value is not None)
+            )), 
+            "inputs_meta_count": len(inputs_meta),
+            "io_mappings_count": len(io_map),
+            "inputs_match_metadata": len(inputs) == len(inputs_meta),
+            "outputs_count": len(outputs_meta)
+        }
+        
+        # AUTO-DETECT status and progress - FIXED LOGIC
+        if (completion_analysis["has_io_mapping"] and 
+            completion_analysis["inputs_collected"] == completion_analysis["inputs_meta_count"] and 
+            completion_analysis["has_tasks"] and
+            completion_analysis["has_mandatory_outputs"] and
+            completion_analysis["inputs_match_metadata"]):
+            # Rule is complete
+            inferred_status = "ACTIVE"
+            inferred_phase = "completed"
+            progress_percentage = 100
+            
+        elif completion_analysis["has_tasks"]:
+            if completion_analysis["inputs_collected"] == completion_analysis["inputs_meta_count"]:
+                # ALL inputs collected - ready for finalization
+                inferred_status = "READY_FOR_CREATION"
+                inferred_phase = "inputs_collected" 
+                progress_percentage = 85
+            elif completion_analysis["inputs_collected"] > 0:
+                # SOME inputs collected - still collecting
+                inferred_status = "DRAFT"
+                inferred_phase = "collecting_inputs"
+                # Calculate actual progress based on collected vs total
+                input_progress = (completion_analysis["inputs_collected"] / max(completion_analysis["inputs_meta_count"], 1)) * 60
+                progress_percentage = min(25 + int(input_progress), 85)
+            elif completion_analysis["has_inputs_meta"]:
+                # Tasks defined, inputs metadata exists but no values collected yet
+                inferred_status = "DRAFT"
+                inferred_phase = "collecting_inputs"
+                progress_percentage = 30  # Slightly higher since metadata is prepared
+            else:
+                # Tasks defined but no inputs yet
+                inferred_status = "DRAFT"
+                inferred_phase = "tasks_selected"
+                progress_percentage = 25
+        else:
+            # No tasks defined yet
+            inferred_status = "DRAFT"
+            inferred_phase = "initialized"
+            progress_percentage = 5
+
+        # Determine what's missing and next actions based on inferred state - FIXED LOGIC
+        missing_components = []
+        if not completion_analysis["has_tasks"]:
+            missing_components.append("task_selection")
+        if completion_analysis["inputs_collected"] < completion_analysis["inputs_meta_count"]:
+            missing_components.append("input_collection")
+        if not completion_analysis["has_io_mapping"]:
+            missing_components.append("io_mapping")
+        if not completion_analysis["has_mandatory_outputs"]:
+            missing_components.append("mandatory_outputs")
+
+        # Determine next action based on inferred state
+        if inferred_status == "ACTIVE":
+            next_action = "rule_complete"
+            message = f"✅ Rule '{rule_name}' is complete and ready to use!"
+            available_actions = ["execute_rule", "create_design_notes", "create_readme", "view_rule"]
+            
+        elif inferred_status == "READY_FOR_CREATION":
+            next_action = "ready_for_finalization"
+            message = f"🎯 Rule '{rule_name}' has all {completion_analysis['inputs_collected']} inputs collected. Ready for I/O mapping and finalization."
+            available_actions = ["finalize_rule", "verify_inputs", "view_yaml_preview"]
+            
+        elif inferred_phase == "tasks_selected":
+            next_action = "need_input_collection"
+            message = f"📋 Rule '{rule_name}' has {completion_analysis['tasks_count']} tasks defined. Ready to collect inputs."
+            available_actions = ["start_input_collection", "view_input_overview"]
+            
+        elif inferred_phase == "collecting_inputs":
+            # FIXED: Use actual inputs_meta_count instead of estimation
+            remaining = max(0, completion_analysis["inputs_meta_count"] - completion_analysis["inputs_collected"])
+            next_action = "continue_input_collection"
+            message = f"⏳ Rule '{rule_name}' input collection in progress: {completion_analysis['inputs_collected']} collected, {remaining} remaining. Continue where you left off."
+            available_actions = ["continue_collecting_inputs", "view_collected_inputs", "input_overview"]
+            
+        elif inferred_phase == "initialized":
+            next_action = "need_task_selection"
+            message = f"🚀 Rule '{rule_name}' is initialized. Need to select tasks to continue."
+            available_actions = ["select_tasks", "view_rule_info"]
+            
+        else:
+            next_action = "unknown_state"
+            message = f"❓ Rule '{rule_name}' is in unknown state. Manual review may be needed."
+            available_actions = ["view_rule_details", "restart_creation"]
+
+        # Estimate remaining time based on what's missing - FIXED LOGIC
+        if inferred_status == "ACTIVE":
+            estimated_time = "Complete"
+        elif inferred_status == "READY_FOR_CREATION":
+            estimated_time = "~5 minutes (I/O mapping and finalization)"
+        elif completion_analysis["has_tasks"]:
+            remaining_inputs = max(0, completion_analysis["inputs_meta_count"] - completion_analysis["inputs_collected"])
+            estimated_time = f"~{remaining_inputs * 2 + 5} minutes ({remaining_inputs} inputs + finalization)"
+        else:
+            estimated_time = "~15-20 minutes (full setup needed)"
+
+        # Build comprehensive status info based on auto-inference
+        status_info = {
+            "rule_name": rule_name,
+            "inferred_status": inferred_status,  # Auto-detected, not from stored field
+            "inferred_phase": inferred_phase,    # Auto-detected, not from stored field
+            "progress_percentage": progress_percentage,  # Calculated from actual content
+            "completion_analysis": completion_analysis,  # Real-time analysis
+            "missing_components": missing_components,
+            "tasks_defined": completion_analysis["tasks_count"],
+            "inputs_collected": completion_analysis["inputs_collected"],
+            "inputs_metadata_count": completion_analysis["inputs_meta_count"],
+            "has_io_mapping": completion_analysis["has_io_mapping"],
+            "io_mappings_count": completion_analysis["io_mappings_count"],
+            "has_mandatory_outputs": completion_analysis["has_mandatory_outputs"],
+            "estimated_time_to_completion": estimated_time,
+            "last_updated": meta.get("last_updated"),
+            "created_at": meta.get("created_at"),
+            "next_action": next_action,
+            "message": message,
+            "available_actions": available_actions,
+            "can_resume": True,
+            "resume_instructions": f"To continue, simply say 'Continue with {rule_name}' or mention the specific action needed."
+        }
+        
+        return {
+            "success": True,
+            "status_info": status_info,
+            "rule_structure_summary": {
+                "has_tasks": completion_analysis["has_tasks"],
+                "has_inputs": completion_analysis["has_inputs"],
+                "has_outputs": completion_analysis["has_mandatory_outputs"],
+                "has_io_mapping": completion_analysis["has_io_mapping"],
+                "total_components": sum([
+                    completion_analysis["has_tasks"],
+                    completion_analysis["has_inputs"],
+                    completion_analysis["has_mandatory_outputs"],
+                    completion_analysis["has_io_mapping"]
+                ]),
+                "completion_percentage": progress_percentage,
+                "components_missing": len(missing_components),
+                "components_complete": 4 - len(missing_components)  # tasks, inputs, outputs, io_mapping
+            },
+            "auto_inference_details": {
+                "status_source": "analyzed_rule_content",
+                "progress_source": "calculated_from_components",
+                "phase_source": "inferred_from_structure",
+                "reliable": True,
+                "analysis_timestamp": datetime.now().isoformat()
+            }
+        }
+        
+    except Exception as e:
+        return {"success": False, "error": f"Failed to check rule status: {e}"}   
+
+def create_initial_rule_from_planning(rule_name: str, purpose: str, description: str, selected_tasks: List[Dict], primary_app_type: str = None) -> Dict[str, Any]:
+    """
+    Create initial rule structure after planning confirmation.
+    This builds a rule with tasks but empty inputs - will be auto-detected as DRAFT status.
+    
+    This function is called internally after user confirms the input overview.
+    """
+    
+    # Determine primary app type from tasks if not provided
+    if not primary_app_type:
+        app_types = []
+        for task_info in selected_tasks:
+            task_details = get_task_details(task_info["task_name"])
+            if task_details.get("appTags", {}).get("appType"):
+                app_types.extend(task_details["appTags"]["appType"])
+        unique_app_types = list(set([t for t in app_types if t != "nocredapp"]))
+        primary_app_type = unique_app_types[0] if unique_app_types else "generic"
+
+    # Build initial rule structure with tasks but no inputs
+    initial_rule_structure = {
+        "apiVersion": "rule.policycow.live/v1alpha1",
+        "kind": "rule",
+        "meta": {
+            "name": rule_name,
+            "purpose": purpose,
+            "description": description,
+            # No explicit status - will be auto-detected as DRAFT
+            "labels": {
+                "appType": [primary_app_type],
+                "environment": ["logical"],
+                "execlevel": ["app"]
+            },
+            "annotations": {
+                "annotateType": [primary_app_type],
+                "app": [primary_app_type]
+            }
+        },
+        "spec": {
+            "inputs": {},  # Empty - will cause DRAFT status detection
+            "inputsMeta__": [],  # Empty initially
+            "outputsMeta__": [
+                {"name": "CompliancePCT_", "dataType": "FLOAT", "required": True, "defaultValue": 0.0},
+                {"name": "ComplianceStatus_", "dataType": "STRING", "required": True, "defaultValue": "NOT_DETERMINED"},
+                {"name": "LogFile", "dataType": "FILE", "required": True, "defaultValue": ""}
+            ],
+            "tasks": [
+                {
+                    "name": task_info["task_name"],
+                    "alias": task_info["task_alias"],
+                    "type": "task",
+                    "appTags": get_task_details(task_info["task_name"]).get("appTags", {}),
+                    "purpose": task_info.get("purpose", f"Task {task_info['task_alias']}")
+                }
+                for task_info in selected_tasks
+            ],
+            "ioMap": []  # Empty - rule not ready yet
+        }
+    }
+    
+    # Create rule - status will be auto-detected as DRAFT
+    return create_rule(initial_rule_structure)
+
+
+def finalize_rule_with_io_mapping(rule_name: str, task_input_mapping: Dict = None) -> Dict[str, Any]:
+    """
+    Finalize rule by adding I/O mapping and setting status to ACTIVE.
+    Called internally after user confirms input verification.
+    
+    This function builds the complete I/O mapping based on task sequence and collected inputs.
+    """
+    
+    try:
+        # Fetch current rule
+        current_rule = fetch_rule(rule_name)
+        if not current_rule["success"]:
+            return {"success": False, "error": f"Rule '{rule_name}' not found"}
+        
+        rule_structure = current_rule["rule_structure"]
+        
+        # Build I/O mapping from existing rule structure
+        tasks = rule_structure["spec"]["tasks"]
+        inputs = rule_structure["spec"]["inputs"]
+        
+        io_map = []
+        
+        if tasks and inputs:
+            # Rule inputs to first task inputs
+            if len(tasks) > 0:
+                first_task_alias = tasks[0]["alias"]
+                for input_name in inputs.keys():
+                    # Use task_input_mapping if provided for precise mapping
+                    if task_input_mapping and input_name in task_input_mapping:
+                        original_input_name = task_input_mapping[input_name]["input_name"]
+                        io_map.append(f"{first_task_alias}.Input.{original_input_name}:=*.Input.{input_name}")
+                    else:
+                        # Generic mapping
+                        io_map.append(f"{first_task_alias}.Input.InputData:=*.Input.{input_name}")
+            
+            # Sequential task-to-task flow
+            for i in range(len(tasks) - 1):
+                current_alias = tasks[i]["alias"]
+                next_alias = tasks[i + 1]["alias"]
+                io_map.append(f"{next_alias}.Input.InputData:={current_alias}.Output.OutputData")
+            
+            # Final outputs from last task (mandatory compliance outputs)
+            if len(tasks) > 0:
+                last_alias = tasks[-1]["alias"]
+                io_map.extend([
+                    f"'*.Output.CompliancePCT_:={last_alias}.Output.CompliancePCT_'",
+                    f"'*.Output.ComplianceStatus_:={last_alias}.Output.ComplianceStatus_'",
+                    f"'*.Output.LogFile:={last_alias}.Output.LogFile'"
+                ])
+        
+        # Add I/O mapping to rule
+        rule_structure["spec"]["ioMap"] = io_map
+        
+        # Update rule - status will be auto-detected as ACTIVE
+        return create_rule(rule_structure)
+        
+    except Exception as e:
+        return {"success": False, "error": f"Failed to finalize rule: {e}"}
+
+
+
+def determine_next_steps(creation_phase: str, completion_analysis: Dict) -> List[str]:
+    """Helper function to determine next steps based on current phase."""
+    
+    if creation_phase == "completed":
+        return ["execute_rule", "create_design_notes", "create_readme"]
+    elif creation_phase == "inputs_collected":
+        return ["build_io_mapping", "finalize_rule"]
+    elif creation_phase == "collecting_inputs":
+        return ["continue_input_collection", "collect_remaining_inputs"]
+    elif creation_phase == "tasks_selected":
+        return ["prepare_input_overview", "start_input_collection"]
+    elif creation_phase == "initialized":
+        return ["select_tasks", "define_task_aliases"]
+    else:
+        return ["review_rule_structure", "check_requirements"]
+
+
+def determine_next_action(creation_phase: str, completion_analysis: Dict) -> str:
+    """Helper function to determine the immediate next action."""
+    
+    if creation_phase == "completed":
+        return "Call create_design_notes() to auto-generate comprehensive design notes. Call create_rule_readme() to auto-generate a comprehensive README file."
+    elif creation_phase == "inputs_collected":
+        return "Call finalize_rule_with_io_mapping() to build I/O mapping and complete rule creation."
+    elif creation_phase == "collecting_inputs":
+        return "Continue collecting remaining inputs using collect_template_input() or collect_parameter_input()."
+    elif creation_phase == "tasks_selected":
+        return "Call prepare_input_collection_overview() to analyze input requirements and start collection."
+    elif creation_phase == "initialized":
+        return "Select tasks and define task aliases, then call prepare_input_collection_overview()."
+    else:
+        return "Review rule requirements and current state to determine next steps."
+
+
+def estimate_completion_time(completion_analysis: Dict) -> str:
+    """Helper function to estimate time to completion."""
+    
+    if completion_analysis.get("has_io_mapping"):
+        return "Complete"
+    elif completion_analysis.get("has_inputs"):
+        return "~5 minutes"

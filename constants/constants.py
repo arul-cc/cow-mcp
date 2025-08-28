@@ -1,6 +1,5 @@
-import os
 import base64
-
+import os
 
 headers = {"X-CALLER": "mcp_server-user_intent"}
 cid = os.environ.get('CCOW_CLIENT_ID', "")
@@ -85,6 +84,14 @@ URL_CREATE_RULE = "/pc-api/v2/rules"
 URL_EXECUTE_RULE = "/pc-api/v2/rules/execute-rule"
 URL_FETCH_EXECUTION_PROGRESS = "/pc-api/v2/rules/fetch-execution-progress"
 URL_FETCH_FILE = "/pc-api/v1/storage/fetch-file"
+URL_PUBLISH_RULE = "/pc-api/v1/rules/publish-rule"
+URL_FETCH_CC_RULES = "/pc-api/v1/rules/fetch-cc-rules"
+URL_UPDATE_RULE_TAGS ="/pc-api/v2/rules/update-tags"
+
+#CC RULES
+URL_GET_CC_RULE = "/v1/rules"
+URL_GET_CC_RULE_BY_ID = "/v1/rules/{id}"
+URL_LINK_CC_RULE_TO_CONTROL = "/v1/plan-controls/{control_id}/link-rule"
 
 # STORAGE
 URL_UPLOAD_FILE = "/pc-api/v1/storage/upload-file"
@@ -99,6 +106,9 @@ URL_SAVE_RULE_README = "/pc-api/v2/rules/upsert-readme"
 # CREDENTIAL
 URL_FETCH_CREDENTIAL = "/v1/credential"
 URL_FETCH_APPLICATION_CREDENTIALS = "/pc-api/v1/application-credentials"
+URL_FETCH_APPLICATIONS = "/pc-api/v1/applications"
+URL_PUBLISH_APPLICATIONS = "/pc-api/v1/applications/publish-application"
+URL_FETCH_CC_APPLICATIONS = "/pc-api/v1/applications/fetch-cc-applications"
 
 #SUPPORT TICKET
 URL_CREATE_TICKET = "/v5/partner/support/ticket"
