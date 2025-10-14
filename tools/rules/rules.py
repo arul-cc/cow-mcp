@@ -1160,6 +1160,7 @@ def prepare_input_collection_overview(selected_tasks: List[Dict[str, str]]) -> D
     - Input names: alphanumeric + underscore only (auto-sanitize with re.sub(r'[^a-zA-Z0-9_]', '_', name))
     - Collection order: Complete ALL inputs for each task one by one (Task 1 → verify Task 1 inputs → Task 2 → verify Task 2 inputs → Task 3 → verify Task 3 inputs)
     - Within each task: collect all inputs, then verify using 'validate_task_inputs()' before proceeding
+    - If a task (e.g., Task 2) has input files or other inputs that are skipped or mapped from a previous task, generate a sample input file based on the previous task response, upload its content using `upload_file()`, and use the returned file URL as the input for file-type parameters during validation.
 
     Args:
         selected_tasks: List of dicts with 'task_name' and 'task_alias'
@@ -3612,7 +3613,10 @@ def fetch_execution_progress(rule_name: str, execution_id: str) -> Dict[str, Any
                 "progress_bar": progress_bar,
                 "percentage": percentage,
                 "status": status,
-                "outputs": task.get("outputs")
+                "outputs": {
+                    key : value for key, value in (task.get("outputs") or {}).items()
+                    if key not in ["CompliancePCT_", "ComplianceStatus_"]
+                } if task.get("outputs") else None
             }
             
             if status == "ERROR" and task.get("error"):
@@ -5043,14 +5047,24 @@ def validate_task_inputs(task_name: str, task_inputs: dict) -> Dict[str, Any]:
     """
     Validate the inputs of a specific task after gathering all required data during rule input collection.
 
+    EXECUTION CONTEXT:
+    - This tool must be executed immediately after completing input collection for each task 
+      (e.g., after Task 1 input collection, validate Task 1 inputs; after Task 2 input collection, validate Task 2 inputs).
+    - Ensures that validation occurs in sequence for every task before proceeding to the next.
+    - If validation errors are found, the tool should provide detailed feedback and allow retrying input collection with corrections before re-validating the task inputs.
+
     ADVANCED INPUT VALIDATION LOGIC:
     - Dynamically validates and maps collected inputs for the given task
     - Ensures that all mandatory parameters are provided and correctly formatted
+    - Supports validation with mapped or skipped inputs using sample input based on the previous task response
 
     VALIDATION FLOW OVERVIEW:
     1. Validate the collected inputs against the user-provided values
-    2. Resolve any dependencies from previous executions or linked tasks
-    3. Provide detailed feedback on missing or incorrect inputs for correction
+    2. If a task (e.g., Task 2) has input files or other inputs that are skipped or mapped from a previous task,
+       generate a sample input file based on the previous task response, upload its content using `upload_file()`,
+       and use the returned file URL as the input for file-type parameters during validation
+    3. Resolve any dependencies from previous executions or linked tasks
+    4. Provide detailed feedback on missing or incorrect inputs for correction
 
     Args:
         task_name: Name of the task to be executed
@@ -5062,7 +5076,6 @@ def validate_task_inputs(task_name: str, task_inputs: dict) -> Dict[str, Any]:
                 Outputs:
                     - ValidationStatus: Successful execution results (if any)
                     - Errors: List of structured error objects when validation or execution fails
-
     """
 
     try:
