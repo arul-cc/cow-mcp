@@ -6,10 +6,9 @@ cid = os.environ.get('CCOW_CLIENT_ID', "")
 cs = os.environ.get('CCOW_CLIENT_SECRET', "")
 t = os.environ.get('CCOW_TOKEN', "710ffde6-43ac-4ac0-b5ce-d4f606e5e45f")
 if cid == "" or cs == "":
-    headers = {"Authorization": t}
+    headers["Authorization"]= t
 else:
-    headers = {"Authorization": "Basic " +
-               base64.b64encode((cid+":"+cs).encode("ascii")).decode("ascii")}
+    headers["Authorization"]= "Basic " + base64.b64encode((cid+":"+cs).encode("ascii")).decode("ascii")
 
 host = os.environ.get('CCOW_HOST', "https://dev.compliancecow.live")
 if not host.endswith("/api"):
@@ -78,6 +77,10 @@ URL_WORKFLOW_SPECS = "/v2/workflow-specs"
 URL_WORKFLOW_BINDINGS = "/v2/workflow-bindings"
 URL_WORKFLOW_BINDINGS_EXECUTE = "/v2/workflow-bindings/execute"
 
+URL_FETCH_TASK_README = "/pc-api/v1/tasks"
+URL_FETCH_RULE_README = "/v1/rules"
+URL_FETCH_FILE_BY_HASH = "/url-hash/download"
+
 
 # RULES
 MCP_GET_RULES_TAG = "MCP"
@@ -91,6 +94,9 @@ URL_PUBLISH_RULE = "/pc-api/v1/rules/publish-rule"
 URL_FETCH_CC_RULES = "/pc-api/v1/rules/fetch-cc-rules"
 URL_UPDATE_RULE_TAGS ="/pc-api/v2/rules/update-tags"
 URL_FETCH_RULES_AND_TASKS_SUGGESTIONS = "/v1/llm/rule-and-task/suggestions/fetch"
+
+#TASK
+URL_EXECUTE_TASK="/pc-api/v1/tasks/execute-task"
 
 #CC RULES
 URL_GET_CC_RULE = "/v1/rules"
