@@ -11,7 +11,7 @@ from mcpconfig.config import mcp
 from tools.general import general
 
 
-mcp_tools_to_be_included = os.getenv("MCP_TOOLS_TO_BE_INCLUDED", "insights,rules,workflow").lower().strip()
+mcp_tools_to_be_included = os.getenv("MCP_TOOLS_TO_BE_INCLUDED", "rules").lower().strip()
 
 MCP_TOOLS = [t.strip() for t in mcp_tools_to_be_included.split(",") if t.strip()]
 
@@ -66,6 +66,6 @@ if __name__ == "__main__":
     else:
         mcp.settings.host = "0.0.0.0"
         mcp.settings.port = portInInt
-        mcp.settings.auth = AuthSettings(issuer_url=host)
-        mcp._auth_server_provider = CCowOAuthProvider()
+        # mcp.settings.auth = AuthSettings(issuer_url=host)
+        # mcp._auth_server_provider = CCowOAuthProvider()
         mcp.run(transport='sse')
