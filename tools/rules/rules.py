@@ -20,87 +20,1004 @@ from utils.debug import logger
 
 # Phase 1: Lightweight task summary resource
 
+if constants.ENABLE_CCOW_API_TOOLS:
+    if constants.ENABLE_CONTEXTUAL_VECTOR_SEARCH:
+        @mcp.tool()
+        def fetch_tasks_suggestions(user_requirement: str, summary_string: str) -> Dict[str, Any]:
+            
+            """
+            Resource for intelligent task suggestion based on user requirements.
 
-if constants.ENABLE_CONTEXTUAL_VECTOR_SEARCH:
+            PURPOSE:
+            - Analyze the user's requirement and generate a concise **summary string** that
+            captures the intent in natural language (not bullet points, not verbatim input).
+            - Use the summary string to query task suggestions via the Suggestions API.
+            - Match suggested tasks with the user’s intent to prevent redundant or duplicate task creation.
+            - Provide resumption options if partially developed tasks exist.
+
+            SUMMARY STRING CREATION:
+            - Always derive a clear, single-paragraph summary string from the user's input.
+            - Convert it into a structured summary string that clearly outlines each step/task that must be performed.
+            - Each part of the summary string should represent an atomic action that could later be mapped to an individual task.
+            - The summary must express the intended goal in natural language.
+            - This summary string is what will be passed to `fetch_rules_and_tasks_suggestions`.
+            - Example:
+                Input: "Create a rule to update CC workflow user actions that remain 'in progress' for more than one day.
+                The process should first check if any workflow user actions are pending, meaning their status is still 'in progress'.
+                If such actions exist and were assigned more than one day ago, they should be marked as completed. Finally,
+                send a notification to the user informing them that their action has been automatically marked as completed after waiting for a long time."
+                Summary: "Check for workflow user actions with status 'in progress'.
+                If they were assigned more than one day ago, mark them as completed and notify the user about the auto-completion."
+
+            DECISION LOGIC:
+            - If **matching tasks** are found in the suggestions:
+                * Present them to the user for selection.
+                * Include explanation of purpose, description, and relevance.
+            - If **no matching tasks** are found:
+                * FALLBACK: Call `get_tasks_summary()` to provide a broader list of tasks for discovery.
+                * Clearly inform the user that no direct match was found and present fallback results.
+
+            AUTOMATIC WORKFLOW HANDLING:
+            - Detect if suggested tasks are only intermediate steps (splitting, extraction, validation, processing).
+            - If intermediate: automatically recommend additional tasks that can complete the workflow.
+            - Never leave the user with incomplete workflows.
+            - Ensure the final task suggestions always lead to actionable, consumable deliverables.
+
+            MANDATORY FUNCTIONALITY:
+            - Generate summary string from raw requirement.
+            - Fetch task suggestions using this summary.
+            - Validate suggestions and ensure workflow completeness.
+            - If suggestions fail → fallback to `get_tasks_summary()`.
+            - Always explain reasoning when no suggestions are found and why fallback is triggered.
+            
+            NEXT STEPS AFTER MATCH:
+            - Once matching task suggestions are presented to the user:
+                * Wait for user selection.
+                * Once matching tasks are found, show to user with explanation before fetching full details using `tasks://details/{task_name}`.
+                * For each selected task, fetch complete task details using `tasks://details/{task_name}`.
+                * Provide the full description, input/output parameters, templates, and usage guidance.
+            - Apply the same **workflow completeness enforcement** as in `get_tasks_summary`:
+                * If the selected task is only an intermediate step, automatically recommend additional tasks to complete the workflow.
+                * Ensure that the final set of tasks always produces actionable, consumable deliverables.
+
+            DEDUPLICATION HANDLING:
+            - The `fetch_rules_and_tasks_suggestions` API may return the same task name multiple times
+            with different descriptions and purpose.
+            - In such cases:
+                * Consolidate results under a single task entry.
+                * Merge or summarize all unique descriptions and purpose into one combined explanation.
+                * Ensure the final presentation avoids duplicates while still capturing all variations.
+            - Always prioritize clarity: the user should see only one task name, with a rich combined description
+            that reflects all possible contexts.
+
+            """
+            try:
+                task_response = rule.fetch_rules_and_tasks_suggestions(query=summary_string, identifierType="tasks")
+                if not task_response:
+                    return {"error": f"No task found that matches the specified requirements."}
+                return task_response
+            except Exception as e:
+                return {
+                    "error": f"An error occurred while retrieving the task with the specified details: {e}"
+                }
+        
+        @mcp.tool()
+        def fetch_rules_suggestions(user_requirement: str, summary_string: str) -> Dict[str, Any]:
+            """
+            Tool-based version of `fetch_rules_and_tasks_suggestions` for improved compatibility and prevention of duplicate rule creation.
+
+            This tool serves as the initial step in the rule creation process. It helps determine whether the user's proposed use case matches any existing rule in the catalog.
+
+            PURPOSE:
+            - To analyze the user's use case and avoid duplicate rule creation by identifying the most suitable existing rule based on its name, description, and purpose.
+            - **NEW: Check for partially developed rules in local system before allowing new rule creation**
+            - **NEW: Present resumption options if incomplete rules are found to prevent duplicate work**
+
+            WHEN TO USE:
+            - As the first step before initiating a new rule creation process.
+            - When the user wants to check if similar rules already exist by leveraging the Rules Suggestions API, instead of browsing the entire catalog manually.
+            - When verifying if a suggested rule can be reused or adapted rather than creating one from scratch.
+            - When checking for incomplete local rules that should be resumed instead of creating new ones.
+
+            🚫 DO NOT USE THIS TOOL FOR:
+            - Checking what rules are available in the ComplianceCow system.
+            - This tool only works with the **rule catalog** (not the entire ComplianceCow system).
+            - The catalog contains only rules that are published and available for reuse in the catalog.
+            - For direct ComplianceCow system lookups, use dedicated system tools instead:
+            - `fetch_cc_rule_by_name`
+            - `fetch_cc_rule_by_id`
+            
+            MANDATORY STEP: CONTEXT SUMMARY
+            - Before calling the rule catalog API, always rewrite the user’s raw requirement into a single-paragraph
+            descriptive summary string (not bullet points, not verbatim input).
+            - The summary must capture the essence of the requirement in clear, natural language.
+            - This summary string is what will be passed to `fetch_rules_and_tasks_suggestions`.
+            - Example:
+                User input: "Use GitHub GraphQL API to fetch merged PRs and check if approvals >= 2"
+                Summary: "The proposed rule validates compliance for GitHub Pull Requests by retrieving all merged PRs
+                through the GitHub GraphQL API, checking whether the number of approvers meets a required threshold,
+                and marking them as compliant or non-compliant."
+
+            WHAT IT DOES:
+            - Generates a concise summary string from the user's intent or requirements.
+            - Calls the Rules Suggestions API with this summary string to retrieve a narrowed list of relevant rules.
+            - Performs intelligent matching using metadata (name, description, purpose) from the suggested rules against the user-provided use case details.
+            - Uses semantic pattern recognition to identify similar or related rules, even across different systems (e.g., AzureUserUnusedPermission vs SalesforceUserUnusedPermissions).
+            - Analyzes the `readmeData` field from the `fetch_rule()` response to validate the rule's suitability for the user's use case.
+            
+            IF A MATCHING RULE IS FOUND:
+
+            - Retrieves complete details via `fetch_rule()`.
+            - If the readmeData field is available in the fetch_rule() response, Performs README-based validation using the `readmeData` field from the `fetch_rule()` response to assess its suitability for the user’s use case.
+            - If suitable:
+            - Returns the rule with full metadata, explanation, and the analysis report.
+            - If not suitable:
+            - Informs the user that the rule's README content does not align with the intended use case.
+            - Prompts the user with clear next-step options:
+                - "The rule's README content does not align with your use case. Please choose one of the following options:"
+                - Customize the existing rule
+                - Evaluate alternative matching rules
+                - Proceed with new rule creation
+            - Waits for the user's choice before proceeding.
+            
+            IF A SIMILAR RULE EXISTS FOR AN ALTERNATE TECHNOLOGY STACK:
+
+            - Detects rules with the same logic but built for a different platform or system (e.g., AzureUserUnusedPermission for SalesforceUserUnusedPermissions)
+            - If the readmeData field is available in the fetch_rule() response, Retrieves and analyzes the `readmeData` from the `fetch_rule()` response to compare the implementation details against the user's proposed use case
+            - Based on the comparison:
+                - If the README content matches or is mostly reusable, suggest using the existing rule structure and logic as a foundation to create a new rule tailored to the user's target system
+                - If the README content does not match or is not suitable, clearly inform the user and recommend either modifying the logic significantly or proceeding with a completely new rule from scratch
+
+            IF NO SUITABLE RULE IS FOUND:
+            - Clearly informs the user that no relevant rule matches the proposed use case
+            - Suggests continuing with new rule creation
+            - Optionally highlights similar rules that can be used as a reference
+
+            MANDATORY STEPS:
+            README VALIDATION:
+            - Always retrieve and analyze `readmeData` from `fetch_rule()`.
+            - Ensure the rule's logic, behavior, and intended use align with the user's proposed use case.
+
+            README ANALYSIS REPORT:
+            - Generate a clear and concise report for each `readmeData` analysis that classifies the result as a full match, partially reusable, or not aligned.
+            - Present this report to the user for review.
+
+            USER CONFIRMATION BEFORE PROCEEDING:
+            When analyzing a README file:
+            - If no relevant rule matches the proposed use case, or if the README is deemed unsuitable, the tool must pause and request explicit user confirmation before proceeding further.
+            - The tool should:
+            - Clearly inform the user that no matching rule was found or the README is not appropriate.
+            - Suggest creating a new rule as the next step.
+            - Optionally recommend similar existing rules that can serve as references to help the user craft the new rule.
+
+            ITERATE UNTIL MATCH:
+            - Repeat the above steps until a suitable rule is found or all options are exhausted.
+
+            CROSS-PLATFORM RULE HANDLING:
+            - For rules from a different stack:
+            - If reusable: suggest customization
+            - If not reusable: recommend new rule creation
+
+            Returns:
+            - A single rule object with full metadata and verified README match — if an exact match is found
+            - A similar rule suggestion with customization options — if a cross-system match is found (e.g., AzureUserUnusedPermission vs SalesforceUserUnusedPermissions)
+            - A message indicating no suitable rule found — with next steps and guidance to create a new rule
+            """
+
+            try:
+                rule_response = rule.fetch_rules_and_tasks_suggestions(query=summary_string, identifierType="rules")
+                if not rule_response:
+                    return {"error": f"No rule found that matches the specified requirements."}
+                return rule_response
+            except Exception as e:
+                return {
+                    "error": f"An error occurred while retrieving the rule with the specified details: {e}"
+                }
+
+
     @mcp.tool()
-    def fetch_tasks_suggestions(user_requirement: str, summary_string: str) -> Dict[str, Any]:
-        
+    def create_support_ticket(subject: str, description: str, priority: str) -> Dict[str, Any]:
         """
-        Resource for intelligent task suggestion based on user requirements.
+        PURPOSE:  
+        - Create structured support tickets only after strict user review and explicit approval of all descriptions.  
+        - Ticket creation MUST NOT occur without explicit user confirmation at every required step.  
+        - Reduce user input errors and rework by ensuring clarity and completeness before ticket submission.
 
-        PURPOSE:
-        - Analyze the user's requirement and generate a concise **summary string** that
-        captures the intent in natural language (not bullet points, not verbatim input).
-        - Use the summary string to query task suggestions via the Suggestions API.
-        - Match suggested tasks with the user’s intent to prevent redundant or duplicate task creation.
-        - Provide resumption options if partially developed tasks exist.
+        MANDATORY CONDITIONS — NO STEP MAY BE SKIPPED OR BYPASSED:
 
-        SUMMARY STRING CREATION:
-        - Always derive a clear, single-paragraph summary string from the user's input.
-        - Convert it into a structured summary string that clearly outlines each step/task that must be performed.
-        - Each part of the summary string should represent an atomic action that could later be mapped to an individual task.
-        - The summary must express the intended goal in natural language.
-        - This summary string is what will be passed to `fetch_rules_and_tasks_suggestions`.
-        - Example:
-            Input: "Create a rule to update CC workflow user actions that remain 'in progress' for more than one day.
-            The process should first check if any workflow user actions are pending, meaning their status is still 'in progress'.
-            If such actions exist and were assigned more than one day ago, they should be marked as completed. Finally,
-            send a notification to the user informing them that their action has been automatically marked as completed after waiting for a long time."
-            Summary: "Check for workflow user actions with status 'in progress'.
-            If they were assigned more than one day ago, mark them as completed and notify the user about the auto-completion."
+        1. BEFORE TOOL ENTRY:  
+        - The tool MUST generate a detailed, pre-filled plain-text description for the task or workflow.  
+        - The user MUST review this description carefully.  
+        - Ticket creation MUST be blocked until the user explicitly APPROVES this description.
 
-        DECISION LOGIC:
-        - If **matching tasks** are found in the suggestions:
-            * Present them to the user for selection.
-            * Include explanation of purpose, description, and relevance.
-        - If **no matching tasks** are found:
-            * FALLBACK: Call `get_tasks_summary()` to provide a broader list of tasks for discovery.
-            * Clearly inform the user that no direct match was found and present fallback results.
+        2. USER VERIFICATION:  
+        - The user MUST be presented with the full pre-filled description.  
+        - The user MUST either confirm its correctness or provide feedback for changes.  
+        - The tool MUST update the description and priority per feedback and repeat this verification step as many times as needed.  
+        - Skipping or auto-approving this step is strictly prohibited.
 
-        AUTOMATIC WORKFLOW HANDLING:
-        - Detect if suggested tasks are only intermediate steps (splitting, extraction, validation, processing).
-        - If intermediate: automatically recommend additional tasks that can complete the workflow.
-        - Never leave the user with incomplete workflows.
-        - Ensure the final task suggestions always lead to actionable, consumable deliverables.
+        3. FINAL APPROVAL & FORMATTING:  
+        - After user approval of the plain text, the description MUST be converted into professional HTML format (bold headings, clear structure, spacing).  
+        - The user MUST explicitly approve this final HTML-formatted description.  
+        - The tool MUST block ticket creation until this final approval is given.  
+        - Only the fully user-approved, HTML-formatted description MAY be used to create the support ticket.
 
-        MANDATORY FUNCTIONALITY:
-        - Generate summary string from raw requirement.
-        - Fetch task suggestions using this summary.
-        - Validate suggestions and ensure workflow completeness.
-        - If suggestions fail → fallback to `get_tasks_summary()`.
-        - Always explain reasoning when no suggestions are found and why fallback is triggered.
-        
-        NEXT STEPS AFTER MATCH:
-        - Once matching task suggestions are presented to the user:
-            * Wait for user selection.
-            * Once matching tasks are found, show to user with explanation before fetching full details using `tasks://details/{task_name}`.
-            * For each selected task, fetch complete task details using `tasks://details/{task_name}`.
-            * Provide the full description, input/output parameters, templates, and usage guidance.
-        - Apply the same **workflow completeness enforcement** as in `get_tasks_summary`:
-            * If the selected task is only an intermediate step, automatically recommend additional tasks to complete the workflow.
-            * Ensure that the final set of tasks always produces actionable, consumable deliverables.
+        IMPORTANT:  
+        **Under no circumstances shall the tool proceed to ticket creation without explicit user approval at all mandatory steps.**  
+        The process must strictly enforce these approvals, preventing any premature or automatic ticket submissions.
 
-        DEDUPLICATION HANDLING:
-        - The `fetch_rules_and_tasks_suggestions` API may return the same task name multiple times
-        with different descriptions and purpose.
-        - In such cases:
-            * Consolidate results under a single task entry.
-            * Merge or summarize all unique descriptions and purpose into one combined explanation.
-            * Ensure the final presentation avoids duplicates while still capturing all variations.
-        - Always prioritize clarity: the user should see only one task name, with a rich combined description
-        that reflects all possible contexts.
+        MANDATORY USER INPUTS:  
+        - `subject` (str) — ticket title.  
+        - `description` (str) — final user-approved, HTML-formatted description.  
+        - `priority` (str) — ticket priority level.  
+        **Valid values:** `"High"`, `"Medium"`, `"Low"` (case-sensitive).  
+        The user MUST provide one of these values to proceed.
 
+        RETURNS:  
+        - A dictionary simulating the ticket creation response for integration or testing purposes.
         """
+
         try:
-            task_response = rule.fetch_rules_and_tasks_suggestions(query=summary_string, identifierType="tasks")
-            if not task_response:
-                return {"error": f"No task found that matches the specified requirements."}
-            return task_response
-        except Exception as e:
-            return {
-                "error": f"An error occurred while retrieving the task with the specified details: {e}"
+            request_body = {
+                "subject": subject,
+                "description": description,
+                "priority": priority
             }
 
+            response = rule.create_support_ticket_api(request_body)
+            
+            if not response:
+                return {"error": "Failed to create support ticket with the specified details."}
+
+            return response
+
+        except Exception as e:
+            return {
+                "error": f"An error occurred while creating the support ticket: {e}"
+            }
+    
+    @mcp.tool()
+    def get_applications_for_tag(tag_name: str) -> Dict[str, Any]:
+        """
+        Get available applications for a specific app tag.
+
+        APPLICATION RETRIEVAL:
+        - Fetches all existing applications configured for the specified app tag
+        - Returns list of applications with ID, name, and app type
+        - Used during rule execution to present application choices to user
+
+        Args:
+            tag_name: The app tag name to get applications for
+
+        Returns:
+            Dict containing available applications for the tag
+        """
+        try:
+            header = wsutils.create_header()
+
+            params = {
+                "app_type_tag": tag_name,
+                "fields": "basic",
+                "validated": True
+            }
+
+            applications = []
+
+            applications_resp = wsutils.get(
+                path=wsutils.build_api_url(endpoint=constants.URL_FETCH_CREDENTIAL), 
+                params=params, 
+                header=header
+            )
+
+            if rule.is_valid_array(applications_resp, "items"):
+                for item in applications_resp["items"]:
+                    app_type = item.get("appType", "")
+                    if isinstance(app_type, str) and app_type.endswith("::"):
+                        app_type = app_type[:-2]
+                    applications.append({
+                        "id": item.get("id"),
+                        "name": item.get("credentialName"),
+                        "appType": app_type
+                    })
+                return {
+                    "success": True, 
+                    "tag_name": tag_name, 
+                    "applications": applications, 
+                    "count": len(applications), 
+                    "message": f"Found {len(applications)} applications for tag '{tag_name}'. User can select an existing application or create new credentials."
+                }    
+            else:
+                return {
+                    "success": False,
+                    "tag_name": tag_name,
+                    "applications": [],
+                    "count": 0,
+                    "message": f"No applications found for tag '{tag_name}'. User can create new credentials."
+                }
+
+        except Exception as e:
+            return {
+                "success": False, 
+                "tag_name": tag_name,
+                "applications": [],
+                "count": 0,
+                "message": f"Error occurred while fetching applications for tag '{tag_name}': {e}"
+            }
+        
+    @mcp.tool()
+    def attach_rule_to_control(rule_id: str, assessment_name: str, control_alias: str, control_id: str,create_evidence: bool = True ) -> Dict[str, Any]:
+
+        """
+        Attach a rule to a specific control in an assessment.
+
+        🚨 CRITICAL EXECUTION BLOCKERS — DO NOT SKIP 🚨
+        Before **any** part of this tool can run, five preconditions MUST be met:
+
+        1. Control Verification:
+        - You MUST verify the control exists in the assessment by calling `verify_control_in_assessment()`.
+        - Verification must confirm the control is present, valid, and a leaf control.
+        - If verification fails → STOP immediately. Do not proceed.
+
+        2. Rule ID Resolution:
+        - If `rule_id` is a valid UUID → proceed.
+        - If `rule_id` is an alphabetic string → treat it as the rule name and resolve it to a UUID **using `fetch_cc_rule_by_name()`**.
+        - If resolution fails or `rule_id` is still not a UUID after this step → STOP immediately.
+        - Execution is STRICTLY PROHIBITED with a plain name.
+
+        3. Rule Publish Validation:
+        - You MUST check if the rule is published in ComplianceCow before proceeding.
+        - If the rule is not published → STOP immediately.  
+        - Published status is a hard requirement for attachment.
+
+        4. Evidence Creation Acknowledgment:
+        - Before proceeding, you MUST request confirmation from the user about `create_evidence`.
+        - Ask: "Do you want to auto-generate evidence from the rule output? (default: True)"
+        - Only proceed after the user explicitly acknowledges their choice.
+
+        5. Override Acknowledgment:
+        - If the control already has a rule attached, you MUST request user confirmation before overriding.
+        - Ask: "This control already has a rule attached. Do you want to override it? (yes/no)"
+        - Only proceed if the user explicitly confirms.
+
+        RULE ATTACHMENT WORKFLOW:
+        1. Perform control verification using `verify_control_in_assessment()` (MANDATORY).
+        2. Resolve rule_id using the CRITICAL EXECUTION BLOCKERS above (use `fetch_cc_rule_by_name()` when needed).
+        3. Validate that the rule is published in ComplianceCow.
+        4. Confirm evidence creation preference from the user (acknowledgment REQUIRED).
+        5. Check for existing rule attachments and request override acknowledgment if needed.
+        6. Attach rule to control.
+        7. Optionally create evidence for the control.
+
+        ATTACHMENT OPTIONS:
+        - create_evidence: Whether to create evidence along with rule attachment. 
+        Must be confirmed by the user before proceeding.
+
+        VALIDATION REQUIREMENTS:
+        - Control must be verified and confirmed as a leaf control.
+        - Rule must be published.
+        - Rule ID must be a valid UUID.
+        - Assessment and control must exist.
+        - User must acknowledge override before replacing an existing rule.
+
+        Args:
+            rule_id: ID of the rule to attach (UUID). If an alphabetic string is provided, 
+                    it MUST be resolved to a UUID using `fetch_cc_rule_by_name()` before the tool proceeds.
+            assessment_name: Name of the assessment.
+            control_alias: Alias of the control.
+            control_id: ID of the control.
+            create_evidence: Whether to create auto-generated evidence from the rule output (default: True).
+                            ⚠️ MUST be confirmed by user acknowledgment before execution.
+
+        Returns:
+            Dict containing attachment status and details.
+        """
+
+        try:
+
+            body = {
+                "ruleId": rule_id,
+                "createEvidence":create_evidence
+            }
+            
+            response = rule.attach_rule_to_control_api(control_id,body)
+            
+            if response.get("success") or response.get("status") == "attached":
+                result = {
+                    "success": True,
+                    "rule_id": rule_id,
+                    "assessment_name": assessment_name,
+                    "control_alias": control_alias,
+                    "control_id": control_id,
+                    "attachment_status": "attached",
+                    "evidence_created": create_evidence,
+                    "message": f"Rule '{rule_id}' successfully attached to control '{control_alias}' in assessment '{assessment_name}'"
+                }
+                
+                if create_evidence:
+                    result["evidence_info"] = response.get("evidenceInfo", {})
+                    result["message"] += " with evidence created."
+                
+                return result
+            else:
+                return {
+                    "success": False,
+                    "rule_id": rule_id,
+                    "assessment_name": assessment_name,
+                    "control_alias": control_alias,
+                    "error": response.get("error", "Failed to attach rule to control"),
+                    "message": f"Failed to attach rule '{rule_id}' to control '{control_alias}'"
+                }
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "rule_name": rule_id,
+                "assessment_name": assessment_name,
+                "control_alias": control_alias,
+                "error": f"Failed to attach rule to control: {str(e)}",
+                "message": f"Error occurred while attaching rule to control"
+            }
+
+    @mcp.tool()
+    def fetch_cc_rule_by_id(rule_id: str) -> Dict[str, Any]:
+        """
+        Fetch rule details by rule id from the **compliancecow**.
+
+        Args:
+            rule_id: Rule Id of the rule to retrieve
+            
+        Returns:
+            Dict containing complete rule structure and metadata
+        """
+        
+        try:
+
+            rule_response = rule.fetch_cc_rule_by_id(rule_id)
+            logger.debug(f"fetch_cc_rule_by_id: rule_output: {rule_response}\n")
+
+            if len(rule_response) == 0:
+                return {
+                    "success": False,
+                    "rule_id": rule_id,
+                    "error": f"Rule '{rule_id}' not found in ComplianceCow. This means the rule is not published or does not exist in ComplianceCow.",
+                    "next_actions": ["publish_rule", "cancel"]
+                }
+
+            return rule_response
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to fetch rule with id '{rule_id}': {str(e)}",
+                "rule_id": rule_id
+            }
+
+    @mcp.tool()
+    def fetch_cc_rule_by_name(rule_name: str) -> Dict[str, Any]:
+        """
+        Fetch rule details by rule name from the **compliancecow**.
+
+        Args:
+            rule_name: Rule name of the rule to retrieve
+            
+        Returns:
+            Dict containing complete rule structure and metadata
+        """
+        
+        try:
+
+            rule_response = rule.fetch_cc_rule_by_name(rule_name)
+            logger.debug(f"fetch_cc_rule_by_name: rule_output: {rule_response}\n")
+
+            if len(rule_response) == 0:
+                return {
+                    "success": False,
+                    "rule_name": rule_name,
+                    "error": f"Rule '{rule_name}' not found in ComplianceCow. This means the rule is not published or does not exist in ComplianceCow.",
+                    "next_actions": ["publish_rule", "cancel"]
+                }
+
+            return rule_response
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to fetch rule with id '{rule_name}': {str(e)}",
+                "rule_name": rule_name
+            }
+    
+    @mcp.tool()
+    def publish_rule(rule_name: str, cc_rule_name: str = None) -> Dict[str, Any]:
+        """
+        Publish a rule to make it available for ComplianceCow system.
+
+        CRITICAL WORKFLOW RULES:
+        - **MANDATORY: Check rule status to ensure rule is fully developed before publishing**
+        - MUST FOLLOW THESE STEPS EXACTLY
+        - DO NOT ASSUME OR SKIP ANY STEPS
+        - APPLICATIONS FIRST, THEN RULE
+        - WAIT FOR USER AT EACH STEP
+        - NO SHORTCUTS OR BYPASSING ALLOWED
+
+        RULE PUBLISHING HANDLING:
+
+        WHEN TO USE:
+        - After successful rule creation
+        - User wants to make rule available for others
+        - Rule has been tested and validated
+
+        WORKFLOW (step-by-step with user confirmation):
+
+        1. Fetch applications and check status
+        - Call fetch_applications() to get available applications
+        - Extract appTypes from ALL tasks in rule spec.tasks[].appTags.appType - MUST TAKE ALL THE TASKS APPTYPE AND REMOVE DUPLICATES - CRITICAL: DO NOT SKIP ANY TASK APPTYPES
+        - Match ALL task appTypes with applications app_type to get application_class_name
+        - Call check_applications_publish_status() for ALL matched applications
+
+        2. Present consolidated applications with meaningful format
+        Applications for your rule:
+        [1] App Name | Type: xyz | Status: Published | Action: Republish
+        [2] App Name | Type: abc | Status: Not Published | Action: Publish
+        
+        Select applications to publish: ___
+        - MANDATORY: WAIT for user selection before proceeding to next step
+        - DO NOT CONTINUE without explicit user input
+        - BLOCK execution until user provides selection
+        - STOP HERE: Cannot proceed to step 3 without user response
+        - HALT WORKFLOW: Wait for user to select application numbers
+        - NEVER SKIP THIS STEP: User must select applications first
+        - ALWAYS ASK FOR SELECTION EVEN IF ALL APPLICATIONS ARE PUBLISHED
+
+        3. Publish selected applications (BLOCKED until step 2 complete)
+        - ENTRY REQUIREMENT: User selection from step 2 must be provided
+        - PREREQUISITE CHECK: Verify user provided application numbers
+        - CANNOT EXECUTE: Without completing step 2 user selection
+        - Get user selection numbers
+        - Call publish_application() for selected applications only
+        - Inform user whether successfully published or not
+        - CHECKPOINT: All applications must be published before rule steps
+
+        4. Check rule publication status (APPLICATIONS MUST BE COMPLETE FIRST)
+        - GATE KEEPER: Cannot proceed without application publishing completion
+        - MANDATORY PREREQUISITE: All application steps finished
+        - BLOCKED ACCESS: No rule operations until applications handled
+        - Call check_rule_publish_status()
+        - Check response valid field:
+            - True = Already published
+            - False = Not published
+
+        5. Handle rule publishing based on status
+        If valid=False (not published):
+        - Show: "Rule is not published. Do you want to publish it? (yes/no)"
+        - If yes: Proceed with publishing using current name
+        
+        If valid=True (already published):
+        - Show: "Rule is already published. Choose option:"
+            - [1] Republish with same name
+            - [2] Publish with another name
+        - Get user choice
+
+        6. Handle alternative name logic
+        If "another name" chosen:
+            1. Ask: "Enter new rule name: ___"
+            2. Call check_rule_publish_status(new_name)
+            3. If name exists: "Name already exists. Choose option:"
+                - [1] Use same name (republish)
+                - [2] Enter another name
+            4. If name available: Proceed with new name
+            5. Keep checking until user chooses available name or decides to republish existing
+
+        7. Final publication
+        - Call publish_rule() with confirmed name
+        - Inform user: "Published successfully" or "Publication failed"
+
+        8. Rule Association:
+            - Publishes the rule to make it available for control attachment
+            - Ask user: "Do you want to attach this rule to a ComplianceCow control? (yes/no)"
+            - If yes: Proceed to associate the rule with control and request assessment name and control alias from the user
+            - If no: End workflow
+
+        EXECUTION CONTROL MECHANISMS:
+        - STEP GATE: Each step requires completion before next
+        - USER GATE: Each step requires user input/confirmation
+        - EXECUTION BLOCKER: No tool calls without user response
+        - WORKFLOW ENFORCER: Steps cannot be skipped or assumed
+        - SEQUENTIAL LOCK: Must complete in exact order
+
+        Args:
+            rule_name: Name of the rule to publish
+            cc_rule_name: Optional alternative name for publishing
+            
+        Returns:
+            Dict with publication status and details
+        """
+        try:
+            headers = wsutils.create_header()
+            
+            # Prepare request data
+            request_data = {
+                "ruleName": rule_name
+            }
+            
+            # Add ccRuleName only if provided
+            if cc_rule_name:
+                request_data["ccRuleName"] = cc_rule_name
+            
+            publish_resp = wsutils.post(
+                path=wsutils.build_api_url(endpoint=constants.URL_PUBLISH_RULE),
+                data=json.dumps(request_data),
+                header=headers
+            )
+
+            if publish_resp and publish_resp.get("message") and  publish_resp.get("message") == "Rule has been published successfully":
+                return {
+                    "success": True,
+                    "published": True,
+                    "rule_info": publish_resp.get("items"),
+                    "message": f"Rule '{rule_name}' published successfully"
+                }
+            else:
+                return {
+                    "success": False,
+                    "published": False,
+                    "error": f"Rule '{rule_name}' failed to publish: {publish_resp}",
+                    "rule_info": []
+                }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "published": False,
+                "error": f"Failed to publish rule: {str(e)}",
+                "rule_info": []
+            }
+            
+
+
+    @mcp.tool()
+    def fetch_assessments(categoryId: str = "", categoryName: str = "", assessmentName: str = "") -> vo.AssessmentListVO:
+        """
+        Fetch the list of available assessments in ComplianceCow.  
+
+        TOOL PURPOSE:
+        - Retrieves a list of available assessments if no specific match is provided.  
+        - Returns only basic assessment info (id, name, category) without the full control hierarchy.  
+        - Used to confirm the assessment name while attaching a rule to a specific control.  
+
+        Args:
+            categoryId (Optional[str]): Assessment category ID.  
+            categoryName (Optional[str]): Assessment category name.  
+            assessmentName (Optional[str]): Assessment name.  
+
+        Returns:
+            - assessments (List[Assessments]): A list of assessment objects, each containing:  
+                - id (str): Unique identifier of the assessment.  
+                - name (str): Name of the assessment.  
+                - category_name (str): Name of the category.  
+            - error (Optional[str]): An error message if any issues occurred during retrieval.  
+        """
+        try:
+            params = {
+                "fields": "basic",
+                "category_id": categoryId,
+                "category_name_contains": categoryName,
+                "name_contains": assessmentName
+            }
+
+            assessments = rule.get_assessments(params)
+            logger.debug("assessment_output: {}\n".format(assessments))
+            return assessments
+
+        except Exception:
+            return vo.AssessmentListVO(error="Facing internal error")
+
+    @mcp.tool()
+    def fetch_leaf_controls_of_an_assessment(assessment_id: str = "") -> Any:
+        """
+        To fetch the only the **leaf controls** for a given assessment.
+        If assessment_id is not provided use other tools to get the assessment and its id.
+        
+        Args:
+            - assessment_id (str, required): Assessment id or plan id.
+
+        Returns:
+            - controls (List[AutomatedControlVO]): List of controls
+                - id (str): Control ID.
+                - displayable (str): Displayable name or label.
+                - alias (str): Alias of the control.
+                - activationStatus (str): Activation status.
+                - ruleName (str): Associated rule name.
+                - assessmentId (str): Assessment identifier.
+            - error (Optional[str]): An error message if any issues occurred during retrieval.
+        """
+        try:
+            params = {
+                "fields": "basic",
+                "skip_prereq_ctrl_priv_check": "false",
+                "page": 1,
+                "page_size": 100,
+                "plan_id": assessment_id,
+                "is_leaf_control":True
+            }
+        
+            leaf_controls = rule.get_assessment_controls(params)
+            logger.debug(f"leaf_controls_output: {leaf_controls}\n")
+            
+            if isinstance(leaf_controls, list):
+                return leaf_controls
+            else:
+                return {"error": "Failed to fetch leaf controls"}
+        except Exception as e:
+            return  {"error": "Failed to fetch leaf controls"}
+
+        
+    @mcp.tool()
+    def verify_control_in_assessment(assessment_name: str, control_alias: str) -> Dict[str, Any]:
+        """
+        Verify the existence of a specific control by alias within an assessment and confirm it is a leaf control.
+
+        CONTROL VERIFICATION AND VALIDATION:
+        - Confirms the control with the specified alias exists in the given assessment.
+        - Validates that the control is a leaf control (eligible for rule attachment).
+        - Checks if a rule is already attached to the control.
+        - Returns control details and attachment status.
+
+        LEAF CONTROL IDENTIFICATION:
+        - A control is considered a leaf control if:
+        - leafControl = true, OR
+        - has no planControls array, OR
+        - planControls array is empty.
+        - Only leaf controls can have rules attached.
+        - If the control is not a leaf control, an error will be returned.
+
+        Args:
+            assessment_name: Name of the assessment.
+            control_alias: Alias of the control to verify.
+
+        Returns:
+            Dict containing control details, leaf status, and rule attachment info.
+        """
+    
+        try:
+
+            assessment_params = {
+                "fields": "basic",
+                "skip_prereq_ctrl_priv_check": "false",
+                "name": assessment_name,
+                "is_leaf_control":True
+            }
+            
+            assessments = rule.get_assessments(assessment_params)
+            logger.debug("assessment_output_for_control_checking: {}\n".format(assessments))
+
+            if len(assessments) == 0:
+                return {"error":f"The requested assessment named {assessment_name} was not found."}
+            
+            assessment = assessments[0]
+
+            control_params = {
+                "fields": "basic",
+                "skip_prereq_ctrl_priv_check": "false",
+                "page_size": 500,
+                "plan_id": assessment.id,
+                "is_leaf_control":True
+            }
+
+            leaf_controls = rule.get_assessment_controls(control_params)
+
+            if not leaf_controls or not isinstance(leaf_controls, list):
+                return {"error": f"No leaf controls found for assessment '{assessment_name}'."}
+            logger.debug(f"leaf_controls_output: {leaf_controls}\n")
+
+            for control in leaf_controls:
+                if str(control.alias) == control_alias:
+                    if control.ruleId:
+                        return {
+                            "success": True,
+                            "assessment_name": assessment_name,
+                            "control_alias": control_alias,
+                            "control_info": control,
+                            "warning": f"Control '{control_alias}' already has a rule attached (Rule ID: {control.ruleId})",
+                            "message": f"Control found but already has rule attached. Options: 1) View existing rule details, 2) Override with new rule attachment",
+                            "next_actions": ["view_existing_rule", "override_attachment", "cancel"]
+                        }
+
+                    return {
+                        "success": True,
+                        "assessment_name": assessment_name,
+                        "control_alias": control_alias,
+                        "control_info": control,
+                        "message": f"Leaf control '{control_alias}' found and available for rule attachment.",
+                        "ready_for_attachment": True
+                    }
+                
+            return {
+                "success": False,
+                "assessment_name": assessment_name,
+                "control_alias": control_alias,
+                "control_info": control,
+                "error": f"Control alias '{control_alias}' was not found as a leaf control in assessment '{assessment_name}'.",
+                "message": f"The control alias '{control_alias}' is either not present or is not a leaf control in the specified assessment '{assessment_name}'. Please make sure you provide a valid, available leaf control alias.",
+                "next_actions": ["retry_with_valid_leaf_control", "cancel"]
+            }
+                    
+        except Exception as e:
+            return {
+                "success": False,
+                "assessment_name": assessment_name,
+                "control_alias": control_alias,
+                "error": f"Failed to find control: {str(e)}",
+                "message": f"Error occurred while searching for the control **'{control_alias}'** in assessment **'{assessment_name}'**."
+            }
+
+    @mcp.tool()
+    def check_applications_publish_status(app_info: List[Dict]) -> Dict[str, Any]:
+        """
+            Check publication status for each application in the provided list.
+
+            app_info structure is [{"name":["ACTUAL application_class_name"]}]
+            
+            Args:
+                app_info: List of application objects to check
+                
+            Returns:
+                Dict with publication status for each application.
+                Each app will have 'published' field: True if published, False if not.
+        """
+        try:
+            headers = wsutils.create_header()
+            
+            app_resp = wsutils.post(
+                path=wsutils.build_api_url(endpoint=constants.URL_FETCH_CC_APPLICATIONS),
+                data=json.dumps(app_info),
+                header=headers
+            )
+
+            if len(app_resp) > 0:
+                return {
+                    "success": True,
+                    "app_info": app_resp
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "No application details found",
+                    "app_info": []
+                }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to fetch application information: {str(e)}",
+                "app_info": []
+            }
+
+
+    @mcp.tool()
+    def check_rule_publish_status(rule_name: str) -> Dict[str, Any]:
+        """
+        Check if a rule is already published.
+
+        - If not published → publish the rule so it becomes available for control attachment  
+        - Once published, prompt the user:  
+        "Do you want to attach this rule to a ComplianceCow control? (yes/no)"  
+        - If yes → ask for assessment name and control alias to proceed with association  
+        - If no → end workflow  
+
+        Args:
+            rule_name: Name of the rule to check
+
+        Returns:
+            Dict with publication status and details
+        """
+        try:
+            headers = wsutils.create_header()
+            
+            # Prepare request data
+            request_data = {
+                "ruleName": rule_name,
+                "host": ""
+            }
+            
+            rule_resp = wsutils.post(
+                path=wsutils.build_api_url(endpoint=constants.URL_FETCH_CC_RULES),
+                data=json.dumps(request_data),
+                header=headers
+            )
+
+            # Check if response has items and if items list is not empty
+            if rule_resp and rule_resp.get("items") and len(rule_resp.get("items", [])) > 0:
+                return {
+                    "success": True,
+                    "published": True,
+                    "rule_info": rule_resp.get("items"),
+                    "message": f"Rule '{rule_name}' is already published"
+                }
+            else:
+                return {
+                    "success": True,
+                    "published": False,
+                    "rule_info": [],
+                    "message": f"Rule '{rule_name}' is not published"
+                }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "published": False,
+                "error": f"Failed to check rule publish status: {str(e)}",
+                "rule_info": []
+            }
+
+
+    @mcp.tool()
+    def publish_application(rule_name: str, app_info: List[Dict]) -> Dict[str, Any]:
+        """
+        Publish applications to make them available for rule execution.
+        
+        Args:
+            rule_name: Name of the rule these applications belong to
+            app_info: List of application objects to publish
+            
+        Returns:
+            Dict with publication results for each application
+        """
+        try:
+            headers = wsutils.create_header()
+            
+            # Prepare request data
+            request_data = {
+                "ruleName": rule_name,
+                "appDetails": app_info
+            }
+            
+            publish_resp = wsutils.post(
+                path=wsutils.build_api_url(endpoint=constants.URL_PUBLISH_APPLICATIONS),
+                data=json.dumps(request_data),
+                header=headers
+            )
+
+            if publish_resp and len(publish_resp) > 0:
+                # Separate successful and failed applications
+                successful_apps = [app for app in publish_resp if "Error" not in app]
+                failed_apps = [app for app in publish_resp if "Error" in app]
+                
+                if failed_apps:
+                    failed_app_names = [app.get("appName", "Unknown") for app in failed_apps]
+                    return {
+                        "success": False,
+                        "published": False,
+                        "error": f"Failed applications: {', '.join(failed_app_names)}",
+                        "successful_apps": successful_apps,
+                        "failed_apps": failed_apps,
+                        "message": f"Some applications failed to publish for rule '{rule_name}'"
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "published": True,
+                        "successful_apps": successful_apps,
+                        "failed_apps": [],
+                        "message": f"All applications for rule '{rule_name}' published successfully"
+                    }
+            else:
+                return {
+                    "success": False,
+                    "published": False,
+                    "error": "No response received from publish endpoint",
+                    "successful_apps": [],
+                    "failed_apps": []
+                }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "published": False,
+                "error": f"Failed to publish applications: {e}",
+                "successful_apps": [],
+                "failed_apps": []
+            }
+        
 
 @mcp.tool()
 def get_tasks_summary() -> str:
@@ -2473,74 +3390,6 @@ def fetch_rule(rule_name: str) -> Dict[str, Any]:
             "error": f"Failed to fetch rule '{rule_name}': {e}",
             "rule_name": rule_name
         }
-    
-@mcp.tool()
-def fetch_cc_rule_by_name(rule_name: str) -> Dict[str, Any]:
-    """
-    Fetch rule details by rule name from the **compliancecow**.
-
-    Args:
-        rule_name: Rule name of the rule to retrieve
-        
-    Returns:
-        Dict containing complete rule structure and metadata
-    """
-    
-    try:
-
-        rule_response = rule.fetch_cc_rule_by_name(rule_name)
-        logger.debug(f"fetch_cc_rule_by_name: rule_output: {rule_response}\n")
-
-        if len(rule_response) == 0:
-            return {
-                "success": False,
-                "rule_name": rule_name,
-                "error": f"Rule '{rule_name}' not found in ComplianceCow. This means the rule is not published or does not exist in ComplianceCow.",
-                "next_actions": ["publish_rule", "cancel"]
-            }
-
-        return rule_response
-            
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to fetch rule with id '{rule_name}': {str(e)}",
-            "rule_name": rule_name
-        }
-
-@mcp.tool()
-def fetch_cc_rule_by_id(rule_id: str) -> Dict[str, Any]:
-    """
-    Fetch rule details by rule id from the **compliancecow**.
-
-    Args:
-        rule_id: Rule Id of the rule to retrieve
-        
-    Returns:
-        Dict containing complete rule structure and metadata
-    """
-    
-    try:
-
-        rule_response = rule.fetch_cc_rule_by_id(rule_id)
-        logger.debug(f"fetch_cc_rule_by_id: rule_output: {rule_response}\n")
-
-        if len(rule_response) == 0:
-            return {
-                "success": False,
-                "rule_id": rule_id,
-                "error": f"Rule '{rule_id}' not found in ComplianceCow. This means the rule is not published or does not exist in ComplianceCow.",
-                "next_actions": ["publish_rule", "cancel"]
-            }
-
-        return rule_response
-            
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"Failed to fetch rule with id '{rule_id}': {str(e)}",
-            "rule_id": rule_id
-        }
 
 @mcp.tool()
 def fetch_rule_design_notes(rule_name: str) -> Dict[str,Any]:
@@ -2973,218 +3822,6 @@ def update_rule_readme(rule_name: str, updated_readme_content: str) -> Dict[str,
 
 
 @mcp.tool()
-def fetch_rule_readme(rule_name: str) -> Dict[str, Any]:
-    """
-    Fetch and manage design notes for a rule.
-
-    WORKFLOW:
-
-    1. CHECK EXISTING NOTES:
-    - Always check if design notes exist for the rule first (whether user wants to create or view)
-    - If found: Present complete notebook to user in readable format
-    - If not found: Offer to create new ones
-
-    2. IF NOTES EXIST:
-    - Show complete notebook with all sections (this serves as the VIEW)
-    - Ask: "Here are your design notes. Modify or regenerate?"
-
-    3. USER OPTIONS:
-    - MODIFY: 
-    1. Ask "Do you need any changes to the design notes?"
-    2. If no changes needed: Get user confirmation, then call create_design_notes() to update
-    3. If changes needed: Collect modifications, show preview, get confirmation, then call create_design_notes() to update
-    - REGENERATE: 
-    1. Generate the design notes using generate_design_notes_preview()
-    2. Show preview to user
-    3. Get user confirmation
-    4. If confirmed: Call create_design_notes() to save the regenerated design notes
-    - CANCEL: End workflow
-
-    4. IF NO NOTES EXIST:
-    - Inform user no design notes found
-    - Ask: "Create comprehensive design notes for this rule?"
-    - If yes: Generate the design notes using generate_design_notes_preview()
-    - Show preview to user
-    - Get user confirmation
-    - If confirmed: Call create_design_notes() to generate
-
-    KEY RULES:
-    - MUST follow this workflow explicitly step by step
-    - Always check for existing notes first whenever user asks about design notes (create or view)
-    - ALWAYS get user confirmation before calling create_design_notes()
-    - If any updates needed, explicitly call create_design_notes() tool to save changes
-    - Present notes in Python notebook format
-    - Use create_design_notes() for creation and updates
-
-    Args:
-        rule_name: Name of the rule
-
-    Returns:
-        Dict with success status, rule name, design notes content, and error details
-    """ 
-
-    try:
-        headers = wsutils.create_header()
-        params = {
-            "name": rule_name,
-            "include_read_me": True
-        }
-        readme_resp = wsutils.get(
-            path=wsutils.build_api_url(endpoint=constants.URL_FETCH_RULES),
-            params=params, 
-            header=headers
-        )
-        
-        rule_info = None
-        if rule.is_valid_key(readme_resp, "items"):
-            rule_info = readme_resp["items"][0]
-
-        if rule_info:
-            readme_content = rule_info.get("readmeData")
-
-            if isinstance(readme_content, str) and readme_content != "":
-                return {
-                    "success": True,
-                    "rule_name": rule_name,
-                    "readmeContent": rule.decode_content(readme_content),
-                    "message": f"README successfully retrieved for rule {rule_name}. Displaying content to user."
-                }
-            else:
-                return {
-                    "success": False,
-                    "rule_name": rule_name,
-                    "message": f"README not found for rule {rule_name}. Offer to create comprehensive README."
-                }
-        else:
-            return {
-                "success": False,
-                "rule_name": rule_name,
-                "message": f"Rule '{rule_name}' not found. Unable to fetch README."
-            }
-            
-    except Exception as e:
-        return {
-            "success": False,
-            "rule_name": rule_name,
-            "message": f"Error fetching README for rule {rule_name}: {e}"
-        }
-
-if constants.ENABLE_CONTEXTUAL_VECTOR_SEARCH:
-    @mcp.tool()
-    def fetch_rules_suggestions(user_requirement: str, summary_string: str) -> Dict[str, Any]:
-        """
-        Tool-based version of `fetch_rules_and_tasks_suggestions` for improved compatibility and prevention of duplicate rule creation.
-
-        This tool serves as the initial step in the rule creation process. It helps determine whether the user's proposed use case matches any existing rule in the catalog.
-
-        PURPOSE:
-        - To analyze the user's use case and avoid duplicate rule creation by identifying the most suitable existing rule based on its name, description, and purpose.
-        - **NEW: Check for partially developed rules in local system before allowing new rule creation**
-        - **NEW: Present resumption options if incomplete rules are found to prevent duplicate work**
-
-        WHEN TO USE:
-        - As the first step before initiating a new rule creation process.
-        - When the user wants to check if similar rules already exist by leveraging the Rules Suggestions API, instead of browsing the entire catalog manually.
-        - When verifying if a suggested rule can be reused or adapted rather than creating one from scratch.
-        - When checking for incomplete local rules that should be resumed instead of creating new ones.
-
-        🚫 DO NOT USE THIS TOOL FOR:
-        - Checking what rules are available in the ComplianceCow system.
-        - This tool only works with the **rule catalog** (not the entire ComplianceCow system).
-        - The catalog contains only rules that are published and available for reuse in the catalog.
-        - For direct ComplianceCow system lookups, use dedicated system tools instead:
-        - `fetch_cc_rule_by_name`
-        - `fetch_cc_rule_by_id`
-        
-        MANDATORY STEP: CONTEXT SUMMARY
-        - Before calling the rule catalog API, always rewrite the user’s raw requirement into a single-paragraph
-        descriptive summary string (not bullet points, not verbatim input).
-        - The summary must capture the essence of the requirement in clear, natural language.
-        - This summary string is what will be passed to `fetch_rules_and_tasks_suggestions`.
-        - Example:
-            User input: "Use GitHub GraphQL API to fetch merged PRs and check if approvals >= 2"
-            Summary: "The proposed rule validates compliance for GitHub Pull Requests by retrieving all merged PRs
-            through the GitHub GraphQL API, checking whether the number of approvers meets a required threshold,
-            and marking them as compliant or non-compliant."
-
-        WHAT IT DOES:
-        - Generates a concise summary string from the user's intent or requirements.
-        - Calls the Rules Suggestions API with this summary string to retrieve a narrowed list of relevant rules.
-        - Performs intelligent matching using metadata (name, description, purpose) from the suggested rules against the user-provided use case details.
-        - Uses semantic pattern recognition to identify similar or related rules, even across different systems (e.g., AzureUserUnusedPermission vs SalesforceUserUnusedPermissions).
-        - Analyzes the `readmeData` field from the `fetch_rule()` response to validate the rule's suitability for the user's use case.
-        
-        IF A MATCHING RULE IS FOUND:
-
-        - Retrieves complete details via `fetch_rule()`.
-        - If the readmeData field is available in the fetch_rule() response, Performs README-based validation using the `readmeData` field from the `fetch_rule()` response to assess its suitability for the user’s use case.
-        - If suitable:
-        - Returns the rule with full metadata, explanation, and the analysis report.
-        - If not suitable:
-        - Informs the user that the rule's README content does not align with the intended use case.
-        - Prompts the user with clear next-step options:
-            - "The rule's README content does not align with your use case. Please choose one of the following options:"
-            - Customize the existing rule
-            - Evaluate alternative matching rules
-            - Proceed with new rule creation
-        - Waits for the user's choice before proceeding.
-        
-        IF A SIMILAR RULE EXISTS FOR AN ALTERNATE TECHNOLOGY STACK:
-
-        - Detects rules with the same logic but built for a different platform or system (e.g., AzureUserUnusedPermission for SalesforceUserUnusedPermissions)
-        - If the readmeData field is available in the fetch_rule() response, Retrieves and analyzes the `readmeData` from the `fetch_rule()` response to compare the implementation details against the user's proposed use case
-        - Based on the comparison:
-            - If the README content matches or is mostly reusable, suggest using the existing rule structure and logic as a foundation to create a new rule tailored to the user's target system
-            - If the README content does not match or is not suitable, clearly inform the user and recommend either modifying the logic significantly or proceeding with a completely new rule from scratch
-
-        IF NO SUITABLE RULE IS FOUND:
-        - Clearly informs the user that no relevant rule matches the proposed use case
-        - Suggests continuing with new rule creation
-        - Optionally highlights similar rules that can be used as a reference
-
-        MANDATORY STEPS:
-        README VALIDATION:
-        - Always retrieve and analyze `readmeData` from `fetch_rule()`.
-        - Ensure the rule's logic, behavior, and intended use align with the user's proposed use case.
-
-        README ANALYSIS REPORT:
-        - Generate a clear and concise report for each `readmeData` analysis that classifies the result as a full match, partially reusable, or not aligned.
-        - Present this report to the user for review.
-
-        USER CONFIRMATION BEFORE PROCEEDING:
-        When analyzing a README file:
-        - If no relevant rule matches the proposed use case, or if the README is deemed unsuitable, the tool must pause and request explicit user confirmation before proceeding further.
-        - The tool should:
-        - Clearly inform the user that no matching rule was found or the README is not appropriate.
-        - Suggest creating a new rule as the next step.
-        - Optionally recommend similar existing rules that can serve as references to help the user craft the new rule.
-
-        ITERATE UNTIL MATCH:
-        - Repeat the above steps until a suitable rule is found or all options are exhausted.
-
-        CROSS-PLATFORM RULE HANDLING:
-        - For rules from a different stack:
-        - If reusable: suggest customization
-        - If not reusable: recommend new rule creation
-
-        Returns:
-        - A single rule object with full metadata and verified README match — if an exact match is found
-        - A similar rule suggestion with customization options — if a cross-system match is found (e.g., AzureUserUnusedPermission vs SalesforceUserUnusedPermissions)
-        - A message indicating no suitable rule found — with next steps and guidance to create a new rule
-        """
-
-        try:
-            rule_response = rule.fetch_rules_and_tasks_suggestions(query=summary_string, identifierType="rules")
-            if not rule_response:
-                return {"error": f"No rule found that matches the specified requirements."}
-            return rule_response
-        except Exception as e:
-            return {
-                "error": f"An error occurred while retrieving the rule with the specified details: {e}"
-            }
-            
-
-@mcp.tool()
 def get_rules_summary() -> Dict[str, Any]:
     """
     Tool-based version of `get_rules_summary` for improved compatibility and prevention of duplicate rule creation.
@@ -3287,75 +3924,6 @@ def get_rules_summary() -> Dict[str, Any]:
         return {
             "error": f"An error occurred while retrieving the rule with the specified details: {e}"
         }
-
-@mcp.tool()
-def get_applications_for_tag(tag_name: str) -> Dict[str, Any]:
-    """
-    Get available applications for a specific app tag.
-
-    APPLICATION RETRIEVAL:
-    - Fetches all existing applications configured for the specified app tag
-    - Returns list of applications with ID, name, and app type
-    - Used during rule execution to present application choices to user
-
-    Args:
-        tag_name: The app tag name to get applications for
-
-    Returns:
-        Dict containing available applications for the tag
-    """
-    try:
-        header = wsutils.create_header()
-
-        params = {
-            "app_type_tag": tag_name,
-            "fields": "basic",
-            "validated": True
-        }
-
-        applications = []
-
-        applications_resp = wsutils.get(
-            path=wsutils.build_api_url(endpoint=constants.URL_FETCH_CREDENTIAL), 
-            params=params, 
-            header=header
-        )
-
-        if rule.is_valid_array(applications_resp, "items"):
-            for item in applications_resp["items"]:
-                app_type = item.get("appType", "")
-                if isinstance(app_type, str) and app_type.endswith("::"):
-                    app_type = app_type[:-2]
-                applications.append({
-                    "id": item.get("id"),
-                    "name": item.get("credentialName"),
-                    "appType": app_type
-                })
-            return {
-                "success": True, 
-                "tag_name": tag_name, 
-                "applications": applications, 
-                "count": len(applications), 
-                "message": f"Found {len(applications)} applications for tag '{tag_name}'. User can select an existing application or create new credentials."
-            }    
-        else:
-            return {
-                "success": False,
-                "tag_name": tag_name,
-                "applications": [],
-                "count": 0,
-                "message": f"No applications found for tag '{tag_name}'. User can create new credentials."
-            }
-
-    except Exception as e:
-        return {
-            "success": False, 
-            "tag_name": tag_name,
-            "applications": [],
-            "count": 0,
-            "message": f"Error occurred while fetching applications for tag '{tag_name}': {e}"
-        }
-
 
 @mcp.tool()
 def get_application_info(tag_name: str) -> Dict[str, Any]:
@@ -3745,69 +4313,6 @@ def fetch_execution_progress(rule_name: str, execution_id: str) -> Dict[str, Any
             "display_lines": [{"text": f"Error: {e}"}]
         }
 
-
-@mcp.tool()
-def create_support_ticket(subject: str, description: str, priority: str) -> Dict[str, Any]:
-    """
-    PURPOSE:  
-    - Create structured support tickets only after strict user review and explicit approval of all descriptions.  
-    - Ticket creation MUST NOT occur without explicit user confirmation at every required step.  
-    - Reduce user input errors and rework by ensuring clarity and completeness before ticket submission.
-
-    MANDATORY CONDITIONS — NO STEP MAY BE SKIPPED OR BYPASSED:
-
-    1. BEFORE TOOL ENTRY:  
-    - The tool MUST generate a detailed, pre-filled plain-text description for the task or workflow.  
-    - The user MUST review this description carefully.  
-    - Ticket creation MUST be blocked until the user explicitly APPROVES this description.
-
-    2. USER VERIFICATION:  
-    - The user MUST be presented with the full pre-filled description.  
-    - The user MUST either confirm its correctness or provide feedback for changes.  
-    - The tool MUST update the description and priority per feedback and repeat this verification step as many times as needed.  
-    - Skipping or auto-approving this step is strictly prohibited.
-
-    3. FINAL APPROVAL & FORMATTING:  
-    - After user approval of the plain text, the description MUST be converted into professional HTML format (bold headings, clear structure, spacing).  
-    - The user MUST explicitly approve this final HTML-formatted description.  
-    - The tool MUST block ticket creation until this final approval is given.  
-    - Only the fully user-approved, HTML-formatted description MAY be used to create the support ticket.
-
-    IMPORTANT:  
-    **Under no circumstances shall the tool proceed to ticket creation without explicit user approval at all mandatory steps.**  
-    The process must strictly enforce these approvals, preventing any premature or automatic ticket submissions.
-
-    MANDATORY USER INPUTS:  
-    - `subject` (str) — ticket title.  
-    - `description` (str) — final user-approved, HTML-formatted description.  
-    - `priority` (str) — ticket priority level.  
-    **Valid values:** `"High"`, `"Medium"`, `"Low"` (case-sensitive).  
-    The user MUST provide one of these values to proceed.
-
-    RETURNS:  
-    - A dictionary simulating the ticket creation response for integration or testing purposes.
-    """
-
-    try:
-        request_body = {
-            "subject": subject,
-            "description": description,
-            "priority": priority
-        }
-
-        response = rule.create_support_ticket_api(request_body)
-        
-        if not response:
-            return {"error": "Failed to create support ticket with the specified details."}
-
-        return response
-
-    except Exception as e:
-        return {
-            "error": f"An error occurred while creating the support ticket: {e}"
-        }
-    
-
 @mcp.tool()
 def fetch_output_file(file_url: str) -> Dict[str, Any]:
     """Fetch and display content of an output file from rule execution.
@@ -3962,616 +4467,6 @@ def fetch_applications() -> Dict[str, Any]:
             "error": f"Failed to fetch applications: {str(e)}",
             "applications": []
         }
-
-
-@mcp.tool()
-def check_applications_publish_status(app_info: List[Dict]) -> Dict[str, Any]:
-   """
-   Check publication status for each application in the provided list.
-
-   app_info structure is [{"name":["ACTUAL application_class_name"]}]
-   
-   Args:
-       app_info: List of application objects to check
-       
-   Returns:
-       Dict with publication status for each application.
-       Each app will have 'published' field: True if published, False if not.
-   """
-   try:
-       headers = wsutils.create_header()
-       
-       app_resp = wsutils.post(
-           path=wsutils.build_api_url(endpoint=constants.URL_FETCH_CC_APPLICATIONS),
-           data=json.dumps(app_info),
-           header=headers
-       )
-
-       if len(app_resp) > 0:
-           return {
-               "success": True,
-               "app_info": app_resp
-           }
-       else:
-           return {
-               "success": False,
-               "error": "No application details found",
-               "app_info": []
-           }
-
-   except Exception as e:
-       return {
-           "success": False,
-           "error": f"Failed to fetch application information: {str(e)}",
-           "app_info": []
-       }
-
-
-@mcp.tool()
-def check_rule_publish_status(rule_name: str) -> Dict[str, Any]:
-    """
-    Check if a rule is already published.
-
-    - If not published → publish the rule so it becomes available for control attachment  
-    - Once published, prompt the user:  
-      "Do you want to attach this rule to a ComplianceCow control? (yes/no)"  
-    - If yes → ask for assessment name and control alias to proceed with association  
-    - If no → end workflow  
-
-    Args:
-        rule_name: Name of the rule to check
-
-    Returns:
-        Dict with publication status and details
-    """
-    try:
-        headers = wsutils.create_header()
-        
-        # Prepare request data
-        request_data = {
-            "ruleName": rule_name,
-            "host": ""
-        }
-        
-        rule_resp = wsutils.post(
-            path=wsutils.build_api_url(endpoint=constants.URL_FETCH_CC_RULES),
-            data=json.dumps(request_data),
-            header=headers
-        )
-
-        # Check if response has items and if items list is not empty
-        if rule_resp and rule_resp.get("items") and len(rule_resp.get("items", [])) > 0:
-            return {
-                "success": True,
-                "published": True,
-                "rule_info": rule_resp.get("items"),
-                "message": f"Rule '{rule_name}' is already published"
-            }
-        else:
-            return {
-                "success": True,
-                "published": False,
-                "rule_info": [],
-                "message": f"Rule '{rule_name}' is not published"
-            }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "published": False,
-            "error": f"Failed to check rule publish status: {str(e)}",
-            "rule_info": []
-        }
-
-
-@mcp.tool()
-def publish_application(rule_name: str, app_info: List[Dict]) -> Dict[str, Any]:
-    """
-    Publish applications to make them available for rule execution.
-    
-    Args:
-        rule_name: Name of the rule these applications belong to
-        app_info: List of application objects to publish
-        
-    Returns:
-        Dict with publication results for each application
-    """
-    try:
-        headers = wsutils.create_header()
-        
-        # Prepare request data
-        request_data = {
-            "ruleName": rule_name,
-            "appDetails": app_info
-        }
-        
-        publish_resp = wsutils.post(
-            path=wsutils.build_api_url(endpoint=constants.URL_PUBLISH_APPLICATIONS),
-            data=json.dumps(request_data),
-            header=headers
-        )
-
-        if publish_resp and len(publish_resp) > 0:
-            # Separate successful and failed applications
-            successful_apps = [app for app in publish_resp if "Error" not in app]
-            failed_apps = [app for app in publish_resp if "Error" in app]
-            
-            if failed_apps:
-                failed_app_names = [app.get("appName", "Unknown") for app in failed_apps]
-                return {
-                    "success": False,
-                    "published": False,
-                    "error": f"Failed applications: {', '.join(failed_app_names)}",
-                    "successful_apps": successful_apps,
-                    "failed_apps": failed_apps,
-                    "message": f"Some applications failed to publish for rule '{rule_name}'"
-                }
-            else:
-                return {
-                    "success": True,
-                    "published": True,
-                    "successful_apps": successful_apps,
-                    "failed_apps": [],
-                    "message": f"All applications for rule '{rule_name}' published successfully"
-                }
-        else:
-            return {
-                "success": False,
-                "published": False,
-                "error": "No response received from publish endpoint",
-                "successful_apps": [],
-                "failed_apps": []
-            }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "published": False,
-            "error": f"Failed to publish applications: {e}",
-            "successful_apps": [],
-            "failed_apps": []
-        }
-    
-
-@mcp.tool()
-def publish_rule(rule_name: str, cc_rule_name: str = None) -> Dict[str, Any]:
-    """
-    Publish a rule to make it available for ComplianceCow system.
-
-    CRITICAL WORKFLOW RULES:
-    - **MANDATORY: Check rule status to ensure rule is fully developed before publishing**
-    - MUST FOLLOW THESE STEPS EXACTLY
-    - DO NOT ASSUME OR SKIP ANY STEPS
-    - APPLICATIONS FIRST, THEN RULE
-    - WAIT FOR USER AT EACH STEP
-    - NO SHORTCUTS OR BYPASSING ALLOWED
-
-    RULE PUBLISHING HANDLING:
-
-    WHEN TO USE:
-    - After successful rule creation
-    - User wants to make rule available for others
-    - Rule has been tested and validated
-
-    WORKFLOW (step-by-step with user confirmation):
-
-    1. Fetch applications and check status
-    - Call fetch_applications() to get available applications
-    - Extract appTypes from ALL tasks in rule spec.tasks[].appTags.appType - MUST TAKE ALL THE TASKS APPTYPE AND REMOVE DUPLICATES - CRITICAL: DO NOT SKIP ANY TASK APPTYPES
-    - Match ALL task appTypes with applications app_type to get application_class_name
-    - Call check_applications_publish_status() for ALL matched applications
-
-    2. Present consolidated applications with meaningful format
-    Applications for your rule:
-    [1] App Name | Type: xyz | Status: Published | Action: Republish
-    [2] App Name | Type: abc | Status: Not Published | Action: Publish
-    
-    Select applications to publish: ___
-    - MANDATORY: WAIT for user selection before proceeding to next step
-    - DO NOT CONTINUE without explicit user input
-    - BLOCK execution until user provides selection
-    - STOP HERE: Cannot proceed to step 3 without user response
-    - HALT WORKFLOW: Wait for user to select application numbers
-    - NEVER SKIP THIS STEP: User must select applications first
-    - ALWAYS ASK FOR SELECTION EVEN IF ALL APPLICATIONS ARE PUBLISHED
-
-    3. Publish selected applications (BLOCKED until step 2 complete)
-    - ENTRY REQUIREMENT: User selection from step 2 must be provided
-    - PREREQUISITE CHECK: Verify user provided application numbers
-    - CANNOT EXECUTE: Without completing step 2 user selection
-    - Get user selection numbers
-    - Call publish_application() for selected applications only
-    - Inform user whether successfully published or not
-    - CHECKPOINT: All applications must be published before rule steps
-
-    4. Check rule publication status (APPLICATIONS MUST BE COMPLETE FIRST)
-    - GATE KEEPER: Cannot proceed without application publishing completion
-    - MANDATORY PREREQUISITE: All application steps finished
-    - BLOCKED ACCESS: No rule operations until applications handled
-    - Call check_rule_publish_status()
-    - Check response valid field:
-        - True = Already published
-        - False = Not published
-
-    5. Handle rule publishing based on status
-    If valid=False (not published):
-    - Show: "Rule is not published. Do you want to publish it? (yes/no)"
-    - If yes: Proceed with publishing using current name
-    
-    If valid=True (already published):
-    - Show: "Rule is already published. Choose option:"
-        - [1] Republish with same name
-        - [2] Publish with another name
-    - Get user choice
-
-    6. Handle alternative name logic
-    If "another name" chosen:
-        1. Ask: "Enter new rule name: ___"
-        2. Call check_rule_publish_status(new_name)
-        3. If name exists: "Name already exists. Choose option:"
-            - [1] Use same name (republish)
-            - [2] Enter another name
-        4. If name available: Proceed with new name
-        5. Keep checking until user chooses available name or decides to republish existing
-
-    7. Final publication
-    - Call publish_rule() with confirmed name
-    - Inform user: "Published successfully" or "Publication failed"
-
-    8. Rule Association:
-        - Publishes the rule to make it available for control attachment
-        - Ask user: "Do you want to attach this rule to a ComplianceCow control? (yes/no)"
-        - If yes: Proceed to associate the rule with control and request assessment name and control alias from the user
-        - If no: End workflow
-
-    EXECUTION CONTROL MECHANISMS:
-    - STEP GATE: Each step requires completion before next
-    - USER GATE: Each step requires user input/confirmation
-    - EXECUTION BLOCKER: No tool calls without user response
-    - WORKFLOW ENFORCER: Steps cannot be skipped or assumed
-    - SEQUENTIAL LOCK: Must complete in exact order
-
-    Args:
-        rule_name: Name of the rule to publish
-        cc_rule_name: Optional alternative name for publishing
-        
-    Returns:
-        Dict with publication status and details
-    """
-    try:
-        headers = wsutils.create_header()
-        
-        # Prepare request data
-        request_data = {
-            "ruleName": rule_name
-        }
-        
-        # Add ccRuleName only if provided
-        if cc_rule_name:
-            request_data["ccRuleName"] = cc_rule_name
-        
-        publish_resp = wsutils.post(
-            path=wsutils.build_api_url(endpoint=constants.URL_PUBLISH_RULE),
-            data=json.dumps(request_data),
-            header=headers
-        )
-
-        if publish_resp and publish_resp.get("message") and  publish_resp.get("message") == "Rule has been published successfully":
-            return {
-                "success": True,
-                "published": True,
-                "rule_info": publish_resp.get("items"),
-                "message": f"Rule '{rule_name}' published successfully"
-            }
-        else:
-            return {
-                "success": False,
-                "published": False,
-                "error": f"Rule '{rule_name}' failed to publish: {publish_resp}",
-                "rule_info": []
-            }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "published": False,
-            "error": f"Failed to publish rule: {str(e)}",
-            "rule_info": []
-        }
-    
-
-
-@mcp.tool()
-def fetch_assessments(categoryId: str = "", categoryName: str = "", assessmentName: str = "") -> vo.AssessmentListVO:
-    """
-    Fetch the list of available assessments in ComplianceCow.  
-
-    TOOL PURPOSE:
-    - Retrieves a list of available assessments if no specific match is provided.  
-    - Returns only basic assessment info (id, name, category) without the full control hierarchy.  
-    - Used to confirm the assessment name while attaching a rule to a specific control.  
-
-    Args:
-        categoryId (Optional[str]): Assessment category ID.  
-        categoryName (Optional[str]): Assessment category name.  
-        assessmentName (Optional[str]): Assessment name.  
-
-    Returns:
-        - assessments (List[Assessments]): A list of assessment objects, each containing:  
-            - id (str): Unique identifier of the assessment.  
-            - name (str): Name of the assessment.  
-            - category_name (str): Name of the category.  
-        - error (Optional[str]): An error message if any issues occurred during retrieval.  
-    """
-    try:
-        params = {
-            "fields": "basic",
-            "category_id": categoryId,
-            "category_name_contains": categoryName,
-            "name_contains": assessmentName
-        }
-
-        assessments = rule.get_assessments(params)
-        logger.debug("assessment_output: {}\n".format(assessments))
-        return assessments
-
-    except Exception:
-        return vo.AssessmentListVO(error="Facing internal error")
-
-@mcp.tool()
-def fetch_leaf_controls_of_an_assessment(assessment_id: str = "") -> Any:
-    """
-    To fetch the only the **leaf controls** for a given assessment.
-    If assessment_id is not provided use other tools to get the assessment and its id.
-    
-    Args:
-        - assessment_id (str, required): Assessment id or plan id.
-
-    Returns:
-        - controls (List[AutomatedControlVO]): List of controls
-            - id (str): Control ID.
-            - displayable (str): Displayable name or label.
-            - alias (str): Alias of the control.
-            - activationStatus (str): Activation status.
-            - ruleName (str): Associated rule name.
-            - assessmentId (str): Assessment identifier.
-        - error (Optional[str]): An error message if any issues occurred during retrieval.
-    """
-    try:
-        params = {
-            "fields": "basic",
-            "skip_prereq_ctrl_priv_check": "false",
-            "page": 1,
-            "page_size": 100,
-            "plan_id": assessment_id,
-            "is_leaf_control":True
-        }
-       
-        leaf_controls = rule.get_assessment_controls(params)
-        logger.debug(f"leaf_controls_output: {leaf_controls}\n")
-        
-        if isinstance(leaf_controls, list):
-            return leaf_controls
-        else:
-            return {"error": "Failed to fetch leaf controls"}
-    except Exception as e:
-        return  {"error": "Failed to fetch leaf controls"}
-
-    
-@mcp.tool()
-def verify_control_in_assessment(assessment_name: str, control_alias: str) -> Dict[str, Any]:
-    """
-    Verify the existence of a specific control by alias within an assessment and confirm it is a leaf control.
-
-    CONTROL VERIFICATION AND VALIDATION:
-    - Confirms the control with the specified alias exists in the given assessment.
-    - Validates that the control is a leaf control (eligible for rule attachment).
-    - Checks if a rule is already attached to the control.
-    - Returns control details and attachment status.
-
-    LEAF CONTROL IDENTIFICATION:
-    - A control is considered a leaf control if:
-    - leafControl = true, OR
-    - has no planControls array, OR
-    - planControls array is empty.
-    - Only leaf controls can have rules attached.
-    - If the control is not a leaf control, an error will be returned.
-
-    Args:
-        assessment_name: Name of the assessment.
-        control_alias: Alias of the control to verify.
-
-    Returns:
-        Dict containing control details, leaf status, and rule attachment info.
-    """
-   
-    try:
-
-        assessment_params = {
-            "fields": "basic",
-            "skip_prereq_ctrl_priv_check": "false",
-            "name": assessment_name,
-            "is_leaf_control":True
-        }
-        
-        assessments = rule.get_assessments(assessment_params)
-        logger.debug("assessment_output_for_control_checking: {}\n".format(assessments))
-
-        if len(assessments) == 0:
-            return {"error":f"The requested assessment named {assessment_name} was not found."}
-        
-        assessment = assessments[0]
-
-        control_params = {
-            "fields": "basic",
-            "skip_prereq_ctrl_priv_check": "false",
-            "page_size": 500,
-            "plan_id": assessment.id,
-            "is_leaf_control":True
-        }
-
-        leaf_controls = rule.get_assessment_controls(control_params)
-
-        if not leaf_controls or not isinstance(leaf_controls, list):
-            return {"error": f"No leaf controls found for assessment '{assessment_name}'."}
-        logger.debug(f"leaf_controls_output: {leaf_controls}\n")
-
-        for control in leaf_controls:
-            if str(control.alias) == control_alias:
-                if control.ruleId:
-                     return {
-                        "success": True,
-                        "assessment_name": assessment_name,
-                        "control_alias": control_alias,
-                        "control_info": control,
-                        "warning": f"Control '{control_alias}' already has a rule attached (Rule ID: {control.ruleId})",
-                        "message": f"Control found but already has rule attached. Options: 1) View existing rule details, 2) Override with new rule attachment",
-                        "next_actions": ["view_existing_rule", "override_attachment", "cancel"]
-                    }
-
-                return {
-                    "success": True,
-                    "assessment_name": assessment_name,
-                    "control_alias": control_alias,
-                    "control_info": control,
-                    "message": f"Leaf control '{control_alias}' found and available for rule attachment.",
-                    "ready_for_attachment": True
-                }
-            
-        return {
-            "success": False,
-            "assessment_name": assessment_name,
-            "control_alias": control_alias,
-            "control_info": control,
-            "error": f"Control alias '{control_alias}' was not found as a leaf control in assessment '{assessment_name}'.",
-            "message": f"The control alias '{control_alias}' is either not present or is not a leaf control in the specified assessment '{assessment_name}'. Please make sure you provide a valid, available leaf control alias.",
-            "next_actions": ["retry_with_valid_leaf_control", "cancel"]
-        }
-                
-    except Exception as e:
-        return {
-            "success": False,
-            "assessment_name": assessment_name,
-            "control_alias": control_alias,
-            "error": f"Failed to find control: {str(e)}",
-            "message": f"Error occurred while searching for the control **'{control_alias}'** in assessment **'{assessment_name}'**."
-        }
-
-
-@mcp.tool()
-def attach_rule_to_control(rule_id: str, assessment_name: str, control_alias: str, control_id: str,create_evidence: bool = True ) -> Dict[str, Any]:
-
-    """
-    Attach a rule to a specific control in an assessment.
-
-    🚨 CRITICAL EXECUTION BLOCKERS — DO NOT SKIP 🚨
-    Before **any** part of this tool can run, five preconditions MUST be met:
-
-    1. Control Verification:
-    - You MUST verify the control exists in the assessment by calling `verify_control_in_assessment()`.
-    - Verification must confirm the control is present, valid, and a leaf control.
-    - If verification fails → STOP immediately. Do not proceed.
-
-    2. Rule ID Resolution:
-    - If `rule_id` is a valid UUID → proceed.
-    - If `rule_id` is an alphabetic string → treat it as the rule name and resolve it to a UUID **using `fetch_cc_rule_by_name()`**.
-    - If resolution fails or `rule_id` is still not a UUID after this step → STOP immediately.
-    - Execution is STRICTLY PROHIBITED with a plain name.
-
-    3. Rule Publish Validation:
-    - You MUST check if the rule is published in ComplianceCow before proceeding.
-    - If the rule is not published → STOP immediately.  
-    - Published status is a hard requirement for attachment.
-
-    4. Evidence Creation Acknowledgment:
-    - Before proceeding, you MUST request confirmation from the user about `create_evidence`.
-    - Ask: "Do you want to auto-generate evidence from the rule output? (default: True)"
-    - Only proceed after the user explicitly acknowledges their choice.
-
-    5. Override Acknowledgment:
-    - If the control already has a rule attached, you MUST request user confirmation before overriding.
-    - Ask: "This control already has a rule attached. Do you want to override it? (yes/no)"
-    - Only proceed if the user explicitly confirms.
-
-    RULE ATTACHMENT WORKFLOW:
-    1. Perform control verification using `verify_control_in_assessment()` (MANDATORY).
-    2. Resolve rule_id using the CRITICAL EXECUTION BLOCKERS above (use `fetch_cc_rule_by_name()` when needed).
-    3. Validate that the rule is published in ComplianceCow.
-    4. Confirm evidence creation preference from the user (acknowledgment REQUIRED).
-    5. Check for existing rule attachments and request override acknowledgment if needed.
-    6. Attach rule to control.
-    7. Optionally create evidence for the control.
-
-    ATTACHMENT OPTIONS:
-    - create_evidence: Whether to create evidence along with rule attachment. 
-    Must be confirmed by the user before proceeding.
-
-    VALIDATION REQUIREMENTS:
-    - Control must be verified and confirmed as a leaf control.
-    - Rule must be published.
-    - Rule ID must be a valid UUID.
-    - Assessment and control must exist.
-    - User must acknowledge override before replacing an existing rule.
-
-    Args:
-        rule_id: ID of the rule to attach (UUID). If an alphabetic string is provided, 
-                it MUST be resolved to a UUID using `fetch_cc_rule_by_name()` before the tool proceeds.
-        assessment_name: Name of the assessment.
-        control_alias: Alias of the control.
-        control_id: ID of the control.
-        create_evidence: Whether to create auto-generated evidence from the rule output (default: True).
-                        ⚠️ MUST be confirmed by user acknowledgment before execution.
-
-    Returns:
-        Dict containing attachment status and details.
-    """
-
-    try:
-
-        body = {
-            "ruleId": rule_id,
-            "createEvidence":create_evidence
-        }
-        
-        response = rule.attach_rule_to_control_api(control_id,body)
-        
-        if response.get("success") or response.get("status") == "attached":
-            result = {
-                "success": True,
-                "rule_id": rule_id,
-                "assessment_name": assessment_name,
-                "control_alias": control_alias,
-                "control_id": control_id,
-                "attachment_status": "attached",
-                "evidence_created": create_evidence,
-                "message": f"Rule '{rule_id}' successfully attached to control '{control_alias}' in assessment '{assessment_name}'"
-            }
-            
-            if create_evidence:
-                result["evidence_info"] = response.get("evidenceInfo", {})
-                result["message"] += " with evidence created."
-            
-            return result
-        else:
-            return {
-                "success": False,
-                "rule_id": rule_id,
-                "assessment_name": assessment_name,
-                "control_alias": control_alias,
-                "error": response.get("error", "Failed to attach rule to control"),
-                "message": f"Failed to attach rule '{rule_id}' to control '{control_alias}'"
-            }
-            
-    except Exception as e:
-        return {
-            "success": False,
-            "rule_name": rule_id,
-            "assessment_name": assessment_name,
-            "control_alias": control_alias,
-            "error": f"Failed to attach rule to control: {str(e)}",
-            "message": f"Error occurred while attaching rule to control"
-        }
-
 
 @mcp.tool()
 def check_rule_status(rule_name: str) -> Dict[str, Any]:
