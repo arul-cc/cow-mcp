@@ -1478,7 +1478,7 @@ def confirm_template_input(rule_name: str, task_name: str, rule_input_name: str,
             file_name = f"{task_name}_{input_name}{file_extension}"
 
             # Upload the file and get URL
-            upload_result = upload_file(rule_name=rule_name, file_name=file_name, content=confirmed_content)
+            upload_result = upload_file.fn(rule_name=rule_name, file_name=file_name, content=confirmed_content)
 
             if upload_result["success"]:
                 input_value = upload_result["file_url"]
@@ -1497,7 +1497,7 @@ def confirm_template_input(rule_name: str, task_name: str, rule_input_name: str,
         
         try:
             # Fetch current rule
-            current_rule = fetch_rule(rule_name)
+            current_rule = fetch_rule.fn(rule_name)
             logger.info(f"current_rule ::{current_rule}")
             if current_rule["success"]:
                 rule_structure = current_rule["rule_structure"]
@@ -1534,7 +1534,7 @@ def confirm_template_input(rule_name: str, task_name: str, rule_input_name: str,
                 logger.info(f"rule_structure 3333 ::{rule_structure}")
                 
                 # Update rule - status will be auto-detected
-                update_result = create_rule(rule_structure)
+                update_result = create_rule.fn(rule_structure)
                 logger.info(f"update_result ::{update_result}")
                 rule_update_success = update_result["success"]
                 rule_status = update_result.get("detected_status", "UNKNOWN")
@@ -1917,7 +1917,7 @@ def confirm_parameter_input(task_name: str, input_name: str, rule_input_name:str
         if rule_name:
             try:
                 # Fetch current rule
-                current_rule = fetch_rule(rule_name)
+                current_rule = fetch_rule.fn(rule_name)
                 if current_rule["success"]:
                     rule_structure = current_rule["rule_structure"]
                     
@@ -1947,7 +1947,7 @@ def confirm_parameter_input(task_name: str, input_name: str, rule_input_name:str
                     rule_structure["spec"]["inputsMeta__"].append(input_meta)
                     
                     # Update rule - status auto-detected
-                    update_result = create_rule(rule_structure)
+                    update_result = create_rule.fn(rule_structure)
                     rule_update_success = update_result["success"]
                     rule_status = update_result.get("detected_status", "UNKNOWN")
                     rule_progress = update_result.get("progress_percentage", 0)
@@ -2820,8 +2820,7 @@ def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
                             if source_task:
                                 # Get task details to validate output exists
                                 task_name = source_task.get("name")
-                                task_details = get_task_details(task_name)
-                                
+                                task_details= get_task_details.fn(task_name)
                                 if task_details.get("error"):
                                     io_mapping_errors.append(f"Could not validate task '{task_name}': {task_details['error']}")
                                 else:
@@ -2851,7 +2850,7 @@ def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
         # MANDATORY: Fetch application class name for the primary app type
         primary_app_type_array = meta.get("labels", {}).get("appType", [])
         primary_app_type = primary_app_type_array[0] if primary_app_type_array else None
-        applications_response = fetch_applications()
+        applications_response = fetch_applications.fn()
         application_class_name = None
 
         # Find matching application class name for primary app type
@@ -2965,7 +2964,7 @@ def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
         }
 
         # Check if rule already exists (for updates vs creation)
-        existing_rule = fetch_rule(rule_structure["meta"]["name"])
+        existing_rule = fetch_rule.fn(rule_structure["meta"]["name"])
         is_update = existing_rule["success"]
 
         # Generate YAML preview for user confirmation (preserved from original)
@@ -3822,7 +3821,7 @@ def update_rule_readme(rule_name: str, updated_readme_content: str) -> Dict[str,
 
 
 @mcp.tool()
-def get_rules_summary() -> Dict[str, Any]:
+def get_rules_summary() -> List[Dict[str, Any]]:
     """
     Tool-based version of `get_rules_summary` for improved compatibility and prevention of duplicate rule creation.
 
@@ -4497,7 +4496,7 @@ def check_rule_status(rule_name: str) -> Dict[str, Any]:
     """
     
     try:
-        current_rule = fetch_rule(rule_name)
+        current_rule = fetch_rule.fn(rule_name)
         if not current_rule["success"]:
             return {
                 "success": False, 
@@ -4712,7 +4711,7 @@ def create_initial_rule_from_planning(rule_name: str, purpose: str, description:
     if not primary_app_type:
         app_types = []
         for task_info in selected_tasks:
-            task_details = get_task_details(task_info["task_name"])
+            task_details = get_task_details.fn(task_info["task_name"])
             if task_details.get("appTags", {}).get("appType"):
                 app_types.extend(task_details["appTags"]["appType"])
         unique_app_types = list(set([t for t in app_types if t != "nocredapp"]))
@@ -4750,7 +4749,7 @@ def create_initial_rule_from_planning(rule_name: str, purpose: str, description:
                     "name": task_info["task_name"],
                     "alias": task_info["task_alias"],
                     "type": "task",
-                    "appTags": get_task_details(task_info["task_name"]).get("appTags", {}),
+                    "appTags": get_task_details.fn(task_info["task_name"]).get("appTags", {}),
                     "purpose": task_info.get("purpose", f"Task {task_info['task_alias']}")
                 }
                 for task_info in selected_tasks
@@ -4760,7 +4759,7 @@ def create_initial_rule_from_planning(rule_name: str, purpose: str, description:
     }
     
     # Create rule - status will be auto-detected as DRAFT
-    return create_rule(initial_rule_structure)
+    return create_rule.fn(initial_rule_structure)
 
 @mcp.tool()
 def configure_rule_output_schema() -> Dict[str, Any]:
@@ -4895,7 +4894,7 @@ def finalize_rule_with_io_mapping(rule_name: str, task_input_mapping: Dict = Non
     
     try:
         # Fetch current rule
-        current_rule = fetch_rule(rule_name)
+        current_rule = fetch_rule.fn(rule_name)
         if not current_rule["success"]:
             return {"success": False, "error": f"Rule '{rule_name}' not found"}
         
@@ -4939,7 +4938,7 @@ def finalize_rule_with_io_mapping(rule_name: str, task_input_mapping: Dict = Non
         rule_structure["spec"]["ioMap"] = io_map
         
         # Update rule - status will be auto-detected as ACTIVE
-        return create_rule(rule_structure)
+        return create_rule.fn(rule_structure)
         
     except Exception as e:
         return {"success": False, "error": f"Failed to finalize rule: {e}"}
@@ -5030,15 +5029,16 @@ def validate_task_inputs(task_name: str, task_inputs: dict) -> Dict[str, Any]:
     - Sample should be minimal but structurally valid
 
     VALIDATION FLOW OVERVIEW:
-    1. Receive collected inputs for a specific task
-    2. Identify inputs that depend on previous tasks
-    3. For dependency inputs:
+    1. Avoid using placeholders for missing or skipped inputs.
+    2. Receive collected inputs for a specific task
+    3. Identify inputs that depend on previous tasks
+    4. For dependency inputs:
        a. Generate appropriate sample data based on expected format
        b. Upload sample file and get URL
        c. Replace dependency marker with sample file URL
-    4. Call task validation API with all inputs (actual + sample URLs)
-    5. Parse validation response
-    6. Return validation results with clear success/failure indicators
+    5. Call task validation API with all inputs (actual + sample URLs)
+    6. Parse validation response
+    7. Return validation results with clear success/failure indicators
 
     VALIDATION RESPONSE HANDLING:
     - On Success: Return validation_status="PASSED" with any output details
@@ -5079,7 +5079,7 @@ def validate_task_inputs(task_name: str, task_inputs: dict) -> Dict[str, Any]:
         generated_files = []
         
         # Get task details to understand expected input structure
-        task_details = get_task_details(task_name)
+        task_details = get_task_details.fn(task_name)
         if task_details.get("error"):
             return {
                 "success": False,
@@ -5121,7 +5121,7 @@ def validate_task_inputs(task_name: str, task_inputs: dict) -> Dict[str, Any]:
                     
                     # Upload sample file
                     sample_filename = f"sample_{task_name}_{input_name}.{input_format or 'txt'}"
-                    upload_result = upload_file(
+                    upload_result = upload_file.fn(
                         rule_name=f"validation_{task_name}",
                         file_name=sample_filename,
                         content=sample_content,
