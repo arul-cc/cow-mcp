@@ -1,8 +1,7 @@
 import json
 import traceback
 import base64
-from typing import List
-from typing import Tuple
+from typing import List, Tuple, Any
 
 from utils import utils
 from utils.debug import logger
@@ -877,7 +876,7 @@ async def fetch_automated_controls_of_an_assessment(assessment_id: str = "") -> 
 
 
 @mcp.tool()
-async def execute_action(assessmentId: str, assessmentRunId: str, actionBindingId: str , assessmentRunControlId: str="", assessmentRunControlEvidenceId: str="", evidenceRecordIds: List[str]=[], inputs: dict[str, any] = None) -> vo.TriggerActionVO:
+async def execute_action(assessmentId: str, assessmentRunId: str, actionBindingId: str , assessmentRunControlId: str="", assessmentRunControlEvidenceId: str="", evidenceRecordIds: List[str]=[], inputs: dict[str, Any] = None) -> vo.TriggerActionVO:
     """
         Use this tool when the user asks about actions such as create, update or other action-related queries.
 
@@ -912,7 +911,7 @@ async def execute_action(assessmentId: str, assessmentRunId: str, actionBindingI
             - assessmentRunControlId - needed for control level action
             - assessmentRunControlEvidenceId - needed for evidence level action
             - evidenceRecordIds - needed for evidence level action
-            - inputs (Optional[dict[str, any]]): Additional inputs for the action, if required by the action's rules.
+            - inputs (Optional[dict[str, Any]]): Additional inputs for the action, if required by the action's rules.
         
         Returns:
             - id (str): id of triggered action.
