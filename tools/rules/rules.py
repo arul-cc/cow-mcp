@@ -1822,6 +1822,9 @@ def create_rule(rule_structure: Dict[str, Any]) -> Dict[str, Any]:
     - Ensure sequential data flow: Rule → Task1 → Task2 → Rule
     - Mandatory compliance outputs from last task
 
+    STEP 4 - inputsMeta__ Cleanup:
+    In spec.inputsMeta__, retain only the entries whose keys exist in spec.inputs. Remove any fields in spec.inputsMeta__ that are not present in spec.inputs.
+
     VALIDATION CHECKLIST (Preserved):
     □ Rule structure validation against schema
     □ Task alias validation in I/O mappings
