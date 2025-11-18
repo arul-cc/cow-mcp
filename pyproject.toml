@@ -16,7 +16,7 @@ dependencies = [
     "requests==2.32.4",
     "django==5.2.4",
     "cachetools==6.2.1",
-    "uvicorn[standard]==0.34.1",
+    "uvicorn[standard]==0.38.0"
 ]
 [tool.setuptools.packages.find]
 where = ["."]
