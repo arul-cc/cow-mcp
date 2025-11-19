@@ -241,7 +241,7 @@ def create_header(ctx: Optional[Context] = None):
         request_headers.get(constants.AUTH_HEADER_KEY)
         or request_headers.get(constants.AUTH_HEADER_KEY.lower())
         )
-        if not auth_header and not auth_header.startswith("Basic"):
+        if not auth_header or auth_header.startswith("Basic"):
             auth_token = get_auth_token()
             if auth_token:
                 newHeader=constants.headers.copy()
@@ -254,6 +254,8 @@ def create_header(ctx: Optional[Context] = None):
 
     # if access_token and hasattr(access_token, "token"):
     #     request_headers["Authorization"] = access_token.token
+    logger.debug(f"create_header final: {request_headers}")
+
 
     return request_headers
 
