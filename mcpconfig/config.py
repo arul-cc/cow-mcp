@@ -64,7 +64,7 @@ def require_auth(func: Callable):
 def get_cc_headers(ctx: Optional[Context]) -> Optional[dict[str, str]]:
     """Extract auth token from request context"""
 
-    cc_headers = {"X-CALLER": "mcp_server-user_intent"}
+    cc_headers = {}
 
     logger.debug(f"[get_cc_headers] ctx: {ctx}")
 
@@ -91,16 +91,26 @@ def get_cc_headers(ctx: Optional[Context]) -> Optional[dict[str, str]]:
             logger.debug(f"[get_cc_headers] cc_headers (final): {cc_headers}")
 
     if not bool(cc_headers):
-        headers = dict(ctx.get_http_request().headers)
+        http_req = None
+        try:
+            http_req = ctx.get_http_request() if ctx else None
+        except RuntimeError:
+            http_req = None  # No active HTTP request
+        if http_req and hasattr(http_req, "headers"):
+            headers = dict(http_req.headers)
+        else:
+            headers = {}
         if not cc_headers.get(constants.AUTH_HEADER_KEY):
             authoriation = get_header_value(headers,constants.AUTH_HEADER_KEY)
             if authoriation:
                 cc_headers[constants.AUTH_HEADER_KEY]=authoriation
             else:
-                cc_headers=constants.headers
+                cc_headers=constants.headers.copy() if isinstance(constants.headers, dict) else {}
 
         elif not cc_headers.get(constants.X_COW_SECURITY_CONTEXT):
             cc_headers[constants.X_COW_SECURITY_CONTEXT] = get_header_value(constants.X_COW_SECURITY_CONTEXT)
+
+    cc_headers.setdefault("X-CALLER", "mcp_server-user_intent")
 
     logger.debug(f"[get_cc_headers] cc_headers (returning): {cc_headers}")
 
