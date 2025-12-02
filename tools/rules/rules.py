@@ -158,6 +158,8 @@ if constants.ENABLE_CCOW_API_TOOLS:
             - Prompts the user with clear next-step options:
                 - "The rule's README content does not align with your use case. Please choose one of the following options:"
                 - Customize the existing rule
+                    * When the user chooses “Customize the existing rule”, the system must automatically execute the existing rule before allowing any modifications.
+                    * This execution must happen immediately and without any user confirmation to load the current results and ensure that all changes—such as adding new tasks, altering task sequence, or updating input values—are applied on top of the most recent rule output.
                 - Evaluate alternative matching rules
                 - Proceed with new rule creation
             - Waits for the user's choice before proceeding.
@@ -1123,6 +1125,32 @@ def get_task_details(task_name: str, ctx: Context | None = None) -> Dict[str, An
     - Analyze appTags to determine the application type
     - Review all metadata and configuration options
     - Use this information for accurate task matching and rule structure creation
+    
+    ============================================================================
+    INPUT–OUTPUT STRUCTURE RESOLUTION (NEW – REQUIRED BEHAVIOR)
+    ============================================================================
+    - **Before creating rule these steps must be done.**
+    - After identifying the required inputs for the task:
+        1. Check whether any input corresponds to, or depends on,
+           the output structure of an existing task in the rule.
+        2. If such a relationship exists:
+            - The assistant MUST explain clearly why execution is needed
+              (“The input <X> depends on the actual output structure of Task <Y>...”)
+            - Automatically execute ONLY the minimal tasks needed to obtain
+              the real output structure.
+            - These executions MUST strictly follow the instructions defined
+              in the execute_rule() tool.
+            - NO user confirmation should be requested.
+            - After execution, the assistant MUST show the execution results 
+              and output.
+        3. Use the real output structure (not a placeholder, not a template)
+           to:
+            - Construct the correct input schema for the new task
+            - Ensure mapping accuracy and avoid invalid input formats
+        4. If execution fails:
+            - Explain why execution failed
+            - Ask the user to provide manual sample data
+            - Use the provided sample data for structure inference
 
     INTENTION-BASED OUTPUT CHAINING:
     - ANALYZE output purpose: Is this meant for direct user consumption or further processing?
@@ -2667,6 +2695,11 @@ def create_rule(rule_structure: Dict[str, Any], ctx: Context | None = None) -> D
     2. After each input collection to update rule progressively
     3. After input verification to finalize rule with I/O mapping
     4. Rule status and progress automatically detected each time
+    5. **When the user selects “Customize the existing rule”, the system must immediately execute the existing rule before allowing any modifications.
+        This execution must occur automatically and without requesting user confirmation.
+        However, the system must collect all required inputs from the user that are necessary to run this execution.
+        After execution is complete, all customizations—including adding new tasks, modifying task order, or updating input values—must be applied on top of the freshly executed rule output, 
+        ensuring the user always customizes the most up-to-date version of the rule.**
 
     PRE-CREATION REQUIREMENTS (Original):
     1. `spec.inputsMeta__` must be defined and contain valid input definitions
@@ -3361,10 +3394,32 @@ def create_design_notes(rule_name: str, design_notes_structure: Dict[str, Any], 
 def fetch_rule(rule_name: str, ctx: Context | None = None) -> Dict[str, Any]:
     """
     Fetch rule details by rule name.
+    
+    If the user's request indicates modifying, updating, editing, customizing, adding, or removing rule elements (tasks, inputs, outputs, or sequence), the tool must NOT immediately execute the rule.
+
+    Instead, follow this process:
+
+    1. Identify exactly which inputs, tasks, or configurations the user wants to modify.
+    2. Determine whether the requested modification affects any downstream tasks, dependent inputs, or output mappings.
+    - If the modification affects other tasks, dependencies, or the rule's final output:
+        a. Explain to the user WHY execution is required (e.g., “The input you are changing affects Task X and Task Y, so the rule must be re-executed to generate updated dependent outputs.”).
+        b. Before execution, collect all mandatory parameters needed by execute_rule() — do not assume defaults.
+        c. Execute the rule.
+        d. Call fetch_execution_progress() and display outputs in this format:
+                - TaskName: [task_name]
+                - Files: [list of files]
+        e. Ask: “View file contents? (yes/no)”
+            - If yes, fetch_output_file() for each selected file and display contents.
+    - If the modification does NOT affect dependent tasks:
+        - Return the rule metadata and allow the user to modify without executing.
+
+    If the user's request is only to view, inspect, read, or fetch the rule, do NOT execute and simply return the rule metadata.
+
+    All decisions must be based strictly on the user’s request text.
 
     Args:
         rule_name: Name of the rule to retrieve
-        
+            
     Returns:
         Dict containing complete rule structure and metadata
     """
@@ -3882,6 +3937,8 @@ def get_rules_summary(ctx: Context | None = None) -> List[Dict[str, Any]]:
     - Prompts the user with clear next-step options:
         - "The rule's README content does not align with your use case. Please choose one of the following options:"
         - Customize the existing rule
+            * When the user chooses “Customize the existing rule”, the system must automatically execute the existing rule before allowing any modifications.
+            * This execution must happen immediately and without any user confirmation to load the current results and ensure that all changes—such as adding new tasks, altering task sequence, or updating input values—are applied on top of the most recent rule output.
         - Evaluate alternative matching rules
         - Proceed with new rule creation
     - Waits for the user's choice before proceeding.
@@ -4012,6 +4069,12 @@ def get_application_info(tag_name: str, ctx: Context | None = None) -> Dict[str,
 def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[Dict[str, Any]], applications: List[Dict[str, Any]], is_application_data_provided_by_user: bool, ctx: Context | None = None) -> Dict[str, Any]:
     """
     RULE EXECUTION WORKFLOW:
+    
+    **MANDATORY PARAMETER VALIDATION:
+        Before starting any execution workflow, the tool MUST validate that **all required parameters**
+        (rule_name, rule_inputs, applications, is_application_data_provided_by_user) are present.
+        If *any* parameter is missing or incomplete, the tool must STOP and explicitly ask the user
+        for the missing input(s). The tool must NOT proceed until all values are provided.**
 
     PREREQUISITE STEPS:
     0. **MANDATORY: Check rule status to ensure rule is fully developed before execution**
@@ -4090,15 +4153,15 @@ def execute_rule(rule_name: str, from_date: str, to_date:str, rule_inputs: List[
         applications: Application configuration details, including credentials.
         is_application_data_provided_by_user (bool): 
             This value **must be determined strictly based on actual user input** during the workflow.
-            - Set to True **only if** the user has provided or configured application details 
-              (such as credentials or URL) during execution.
-            - Set to False **if** the application information was pre-existing or selected from saved applications.
+            - Set to True **only if the user has provided or configured application details (such as applicationId, credentials or URL) during execution.**
+            - Set to False **if the application information was pre-existing or selected from saved applications.**
             - The tool must **not assume or predefine** this value without user confirmation.
 
     Returns:
         Dict with execution results
     """
     try:
+        logger.debug("------------- called execute_rule -------------")
 
         if not is_application_data_provided_by_user:
             return {
@@ -4849,77 +4912,78 @@ def create_initial_rule_from_planning(rule_name: str, purpose: str, description:
 @mcp.tool()
 def configure_rule_output_schema(ctx: Context | None = None) -> Dict[str, Any]:
     """
-    PREREQUISITE — MUST RUN FIRST (NON-SKIPPABLE)
-    This tool is a hard prerequisite and MUST be executed successfully before the `prepare_input_collection_overview()` tool (and any downstream rule-creation or evaluation steps). 
-    If this tool has not run or did not complete, the workflow MUST fail fast with an explicit error.
+    OPTIONAL TOOL — MAY OR MAY NOT BE INVOKED BY THE WORKFLOW
     
+    This tool is optional from the workflow's perspective. The system may choose to call
+    `configure_rule_output_schema()` or skip it entirely depending on the user's scenario
+    and rule design path.
+
+    IMPORTANT:
+    Once this tool *is invoked*, its internal behavior becomes STRICT and NON-SKIPPABLE.
+    If the tool is called, all rules below must be enforced with zero exceptions.
+
+    ----------------------------------------------
+    PREREQUISITE — IF CALLED, MUST RUN FIRST  
+    (STRICT BEHAVIOR BEGINS WHEN INVOKED)
+    ----------------------------------------------
+    If the workflow chooses to run this tool, then it MUST execute successfully before
+    `prepare_input_collection_overview()` and before any downstream rule-creation,
+    output-schema configuration, or evaluation steps.
+
+    If this tool is called but not completed, the workflow MUST fail fast.
+
+    ----------------------------------------------
     PURPOSE
-    Establish the rule's output schema policy for ComplianceCow and apply any required transformations. In ComplianceCow, we maintain a standard format for storing evidence records. The user MUST choose one of the following rule output options:
+    ----------------------------------------------
+    Establish the rule’s output schema policy for ComplianceCow and apply required
+    transformations. The user MUST explicitly choose one of:
 
-    1) Standard schema only (ComplianceCow structured response fields)
-    2) Extended schema only (all fields from the source response)
-    3) Both standard + extended
+    1) Standard schema only  
+    2) Extended schema only  
+    3) Both Standard + Extended  
 
-    USER PROMPT (MANDATORY — NEVER SKIPPABLE)
-    The workflow MUST always pause and explicitly prompt the user before proceeding.  
-    This step CANNOT be bypassed, defaulted, auto-selected, or inferred.  
-    If the user has not actively selected one of (a), (b), or (c), this tool MUST fail fast with a clear error message and stop execution.  
+    ----------------------------------------------
+    MANDATORY USER SELECTION (NO AUTODEFAULTS)
+    ----------------------------------------------
+    If the tool is invoked:
+    - The workflow MUST pause for explicit user input (a/b/c)
+    - No defaulting, auto-selection, or inference is allowed
+    - If user does not choose a/b/c → FAIL FAST
 
-    VALIDATION & ENFORCEMENT
-    - This tool is NON-SKIPPABLE. If not executed, or if the user does not provide an explicit choice (a/b/c), the workflow MUST stop immediately with an error.  
-    - No implicit defaults, assumptions, or auto-selections are allowed.  
-    - Mandatory Key mapping rules still apply if Standard schema is chosen.
+    ----------------------------------------------
+    BEHAVIOR BY USER SELECTION
+    ----------------------------------------------
 
-    BEHAVIOR BY SELECTION
+    A) STANDARD ONLY
+    - Reuse an existing Transformation task if present; otherwise create one.
+    - Map ALL Mandatory Keys (in order).
+    - Collect required inputs via collect_template_input() / collect_parameter_input().
+    - For each required input: call get_template_guidance('{task.name}', '<input_name>').
+    - Require user review + confirmation before proceeding.
 
-    A) If user selects STANDARD ONLY:
-    - If the pipeline already ends with a Transformation task, reuse the existing Transformation task instead of appending a new one.
-    - Otherwise, append a Transformation task at the END of the selected task pipeline.
-    - In the Transformation task, map ALL Mandatory Keys (listed below).
-    - Values for these keys MUST be taken from the pipeline's input file(s) and/or upstream task outputs, following the Deeper Analysis Rules.
-    - Continue collecting inputs for the Transformation task using:
-        `collect_template_input()` or `collect_parameter_input()`.
-    - For each input that requires user guidance, call:
-        `get_template_guidance('{task.name}', '<input_name>')`
-    to display the expected input format to the user.
-    - Ask the user to review and confirm OR edit the configuration before proceeding.
-    - Do not proceed unless all Mandatory Keys are mapped and the configuration is confirmed (fail fast with guidance).
+    B) EXTENDED ONLY
+    - Preserve raw response fields exactly as-is (non-standard).
+    - Use the last task output as the Extended schema output.
+    - No mandatory ordering or schema enforcement.
 
-    B) If user selects EXTENDED ONLY:
-    - The Extended schema is a NON-STANDARD structure. It preserves the raw fields from the source response without enforcing ComplianceCow's standard schema format or mandatory key order.
-    - Use the LAST task's output directly as the Extended schema output.
-    - No mandatory field ordering or schema enforcement is applied — the structure is kept as-is for completeness and traceability.
+    C) BOTH
+    - Perform all Standard steps (A).
+    - Add exactly ONE extended output: ExtendedData_<filename>.
+    - Map last task output into ExtendedData_<filename>.
+    - Prevent duplicate extended outputs.
+    - Require confirmation and full validation before proceeding.
 
-    C) If user selects BOTH:
-    - Perform all steps from (A) to create the Standard schema:
-    * Append a Transformation task at the END of the selected task pipeline.
-    * Map ALL Mandatory Keys in the exact required order.
-    * Include <AdditionalKeysBasedOnUseCase> as needed for compliance.
-    - Also add the Extended schema as a NON-STANDARD structure:
-    * Create exactly ONE output field named: ExtendedData_<filename>.
-        <filename> MUST be determinable from the use case (e.g., source, resource, or input artifact name).
-    * Map the SAME LAST task output that is used as the input to the Transformation task into ExtendedData_<filename>.
-    * Do NOT create duplicate extended outputs (for example, do not add both
-        ExtendedData_JSONToCSV and ConvertedCSVFile if they contain the same data).
-        Only ExtendedData_<filename> must exist.
-    - Continue collecting inputs for the Transformation task using:
-        collect_template_input() or collect_parameter_input().
-    - For each input that requires user guidance, call:
-        get_template_guidance('{task.name}', '<input_name>')
-    to display the expected input format to the user.
-    - Ask the user to review and confirm OR edit the configuration before proceeding.
-    - Do not proceed unless:
-    * All Mandatory Keys are mapped and validated in order
-    * Configuration is confirmed by the user
-
+    ----------------------------------------------
     DEEPER ANALYSIS RULES
-    - Always extract and map the core Mandatory Keys required for compliance.
-    - For <AdditionalKeysBasedOnUseCase>, determine the minimal required fields based on the user's specific use case and map them under the Standard schema.
-    - If additional fields are critical for the use case, map them explicitly into the Standard schema.
-    - If fields are non-critical but useful, preserve them under `ExtendedData_<filename>`.
-    - If MCP cannot store certain fields, the tool MUST explain the omission clearly to the user before proceeding and request confirmation if needed.
+    ----------------------------------------------
+    - Always map Mandatory Keys in exact order.
+    - Additional keys must be mapped as needed for user’s use case.
+    - Explain and confirm any fields that cannot be stored via MCP.
+    - ExtendedData_<filename> stores non-standard additional fields.
 
-    MANDATORY KEYS (MUST ALWAYS BE MAPPED — IN THIS EXACT ORDER)
+    ----------------------------------------------
+    MANDATORY KEYS (STRICT ORDER)
+    ----------------------------------------------
     - System
     - Source
     - ResourceID
@@ -4928,8 +4992,6 @@ def configure_rule_output_schema(ctx: Context | None = None) -> Dict[str, Any]:
     - ResourceLocation
     - ResourceTags
     - <Important Keys Based On User's Use Case>
-        (for example: fields from the response file such as user_id, username, email,
-        license_type, assigned_date, last_login_date, last_activity_date)
     - ValidationStatusCode
     - ValidationStatusNotes
     - ComplianceStatus
@@ -4939,21 +5001,31 @@ def configure_rule_output_schema(ctx: Context | None = None) -> Dict[str, Any]:
     - ActionStatus
     - ActionResponseURL
 
+    ----------------------------------------------
     VALIDATION & ENFORCEMENT
-    - This tool is NON-SKIPPABLE. If not executed, or if any Mandatory Key mapping is missing for the chosen Standard schema path, the workflow MUST stop with an error.
-    - Key names are case-sensitive and MUST NOT be renamed.
-    - The tool MUST persist the chosen option and mappings so that downstream tools consume a consistent schema contract.
-    - The workflow MUST NOT proceed to `prepare_input_collection_overview()` until:
-        * Inputs are collected via `collect_template_input()` or `collect_parameter_input()`
-        * `get_template_guidance()` has been used for each input needing guidance
-        * The user has confirmed or edited the configuration
-        * All Mandatory Keys are mapped and validated in order
-    - Mandatory, a JS chart (Mermaid/D3) MUST be generated to visualize the rule's I/O field structure. The chart must be displayed in this chat immediately after user input, and no further processing is allowed until this step is completed.
+    ----------------------------------------------
+    If this tool is invoked:
+    - ALL mandatory keys must be mapped and validated
+    - Names are case-sensitive
+    - No renaming allowed
+    - The tool MUST store all selected schema contracts for downstream tools
+    - Workflow MUST NOT continue until:
+        * Inputs collected
+        * Guidance retrieved
+        * User confirms configuration
+        * Keys are validated
+    - A JS chart (Mermaid/D3) MUST be generated and displayed immediately after user input.
+    No further processing is allowed before this chart is shown.
 
+    ----------------------------------------------
     EXECUTION ORDER GUARANTEE
-    On success, and ONLY after input collection and configuration confirmation,
-    the next tool to run MUST be `prepare_input_collection_overview()`.
+    ----------------------------------------------
+    If the tool succeeds (when invoked), the next tool MUST be:
+    prepare_input_collection_overview()
+
+    ----------------------------------------------
     """
+
     user_message = (
         "In ComplianceCow, evidence is stored in a structured format.\n"
         "Please select one of the following options:\n"
@@ -5087,73 +5159,108 @@ def validate_task_inputs(task_name: str, task_inputs: dict, ctx: Context | None 
     """
     Validate the inputs of a specific task after gathering all required data during rule input collection.
 
-    EXECUTION CONTEXT:
-    - This tool MUST be executed immediately after completing input collection for each task 
-      (e.g., after Task 1 input collection, validate Task 1 inputs; after Task 2 input collection, validate Task 2 inputs).
-    - Ensures that validation occurs in sequence for every task before proceeding to the next.
-    - If validation errors are found, the tool should provide detailed feedback and allow retrying input collection with corrections before re-validating the task inputs.
-    - THIS IS A MANDATORY CHECKPOINT - NO TASK CAN PROCEED WITHOUT VALIDATION PASSING
+    **This tool also manages dependency-based sample data preparation by executing only the tasks required to
+    produce valid output. Execution happens automatically whenever needed—NO user confirmation should be requested.
+    However, the assistant MUST always explain clearly *why* the execution is required before performing it.
+    AFTER executing any required task, the assistant MUST display the execution results and outputs before continuing.**
 
-    ADVANCED INPUT VALIDATION LOGIC:
-    - Dynamically validates and maps collected inputs for the given task
-    - Ensures that all mandatory parameters are provided and correctly formatted
-    - Supports validation with mapped or skipped inputs using sample input based on the previous task response
+    ===============================================================================
+    EXECUTION CONTEXT
+    ===============================================================================
+    - **All rule executions must strictly follow the instructions defined in the execute_rule() tool.**
+    - This tool MUST run immediately after collecting all inputs for a task.
+    - Validation is sequential: validate Task 1 → then Task 2 → etc.
+    - No task may proceed until its validation passes.
+    - On validation failure, the assistant must give detailed error feedback and allow input correction.
 
-    INTER-TASK DEPENDENCY HANDLING:
-    - If a task expects input from a previous task (file or data mapping):
-      1. Check if the input is marked as "from_previous_task" or has dependency metadata
-      2. Generate sample data based on expected format from previous task's output
-      3. Upload sample file using upload_file() and get file URL
-      4. Use the file URL as input value for validation purposes only
-      5. Mark this input as "sample_for_validation" in response
-    
-    SAMPLE FILE GENERATION LOGIC:
-    - For CSV files: Generate 3-5 sample rows with realistic column names
-    - For JSON files: Generate sample object/array with expected structure
-    - For text files: Generate representative sample content
-    - Sample should be minimal but structurally valid
+    ===============================================================================
+    DEPENDENCY & SAMPLE DATA HANDLING
+    ===============================================================================
+    If a task requires input from a previous task (dataset, file, or structured output):
 
-    VALIDATION FLOW OVERVIEW:
-    1. Avoid using placeholders for missing or skipped inputs.
-    2. Receive collected inputs for a specific task
-    3. Identify inputs that depend on previous tasks
-    4. For dependency inputs:
-       a. Generate appropriate sample data based on expected format
-       b. Upload sample file and get URL
-       c. Replace dependency marker with sample file URL
-    5. Call task validation API with all inputs (actual + sample URLs)
-    6. Parse validation response
-    7. Return validation results with clear success/failure indicators
+    1. **Use real task output when available**
+    - If the dependent task was already executed earlier and produced outputs:
+        → Use those outputs as the sample data.
+        → Do NOT generate synthetic sample data.
+        → Do NOT re-run the previous task unnecessarily.
 
-    VALIDATION RESPONSE HANDLING:
-    - On Success: Return validation_status="PASSED" with any output details
-    - On Failure: Return validation_status="FAILED" with detailed error messages
-    - Include list of which inputs failed validation and why
-    - Provide actionable guidance for fixing validation errors
+    2. **If required previous task output does NOT exist**
+    - The assistant MUST:
+        - Explain *why* validation depends on executing the previous task.
+        - Then automatically execute Task <Y> (and any required tasks in the chain).
+        - **After execution, the assistant MUST display all execution results and outputs.**
+        - NO user confirmation should be requested—only explanation.
 
-    ERROR HANDLING:
-    - Missing required inputs: List which inputs are missing
-    - Invalid format: Specify format expected vs received
-    - Type mismatches: Indicate correct data type needed
-    - File access errors: Report if files can't be read/processed
+    3. **If executing a required previous task fails**
+    - The assistant MUST:
+        - Explain clearly why the task failed (wrong inputs, API errors, missing fields, etc.)
+        - Ask the user to provide sample data for the required input.
+    - User-provided sample data becomes the fallback sample.
 
+    4. **Only execute what is needed**
+    - The assistant must not run the entire rule.
+    - It executes ONLY:
+        - The minimal set of tasks whose outputs are required for validation.
+    - **Every executed task must have its results shown to the user immediately.**
+
+    ===============================================================================
+    MINIMAL SAMPLE GENERATION (LAST RESORT)
+    ===============================================================================
+    If no previous task output exists AND the user does not provide sample data:
+    - Generate minimal valid sample data
+    - Upload and obtain a file URL
+    - Mark it as "sample_for_validation"
+
+    ===============================================================================
+    VALIDATION FLOW
+    ===============================================================================
+    1. Accept task inputs.
+    2. Detect dependency inputs.
+    3. For each dependency input:
+        - If previous task output exists → use it.
+        - If not → explain why execution is needed → execute required tasks → **show execution results and outputs**.
+        - If execution fails → explain → ask user for sample data.
+    4. Replace dependency markers with actual or sample URLs.
+    5. Call task validation API.
+    6. Parse and return structured results.
+
+    ===============================================================================
+    VALIDATION RESPONSE HANDLING
+    ===============================================================================
+    - PASSED:
+        • Return validation_status="PASSED"
+        • Include validated_inputs and API output
+    - FAILED:
+        • Return validation_status="FAILED"
+        • List which inputs failed and explain exactly why
+        • Provide actionable correction guidance
+
+    ===============================================================================
+    ERROR HANDLING
+    ===============================================================================
+    - Missing required inputs → list them
+    - Invalid format → explain expected vs received
+    - Type mismatches → specify correct type
+    - File access errors → explain
+    - Dependency execution failures → explain + request sample data
+
+    ===============================================================================
     Args:
         task_name: Name of the task to validate
-        task_inputs: Dictionary containing key-value pairs of collected task inputs
-                    Format: {"input_name": "value" or "<<FROM_PREVIOUS_TASK>>" or file_url}
+        task_inputs: Dict of inputs:
+                    {"input_name": "value" | "<<FROM_PREVIOUS_TASK>>" | file_url}
 
     Returns:
-        Dict containing:
         {
             "success": bool,
             "validation_status": "PASSED" | "FAILED",
             "task_name": str,
-            "validated_inputs": dict,  # Actual inputs used for validation (with sample URLs)
-            "validation_output": dict,  # Output from validation API
-            "errors": list,  # List of validation errors if failed
-            "inputs_with_samples": list,  # List of inputs where samples were generated
+            "validated_inputs": dict,
+            "validation_output": dict,
+            "errors": list,
+            "inputs_with_samples": list,
             "message": str,
-            "next_action": str  # What to do next based on validation result
+            "next_action": str
         }
     """
 
@@ -5506,3 +5613,6 @@ def validate_application(selected_application: dict, cc_application: dict):
 
     return is_valid, result
 
+@mcp.prompt
+def alterntive_prompt() -> str:
+    return "When generating the JQ expression, do not hard-code any values from the previous task’s output. If your requirement involves comparing or merging two files, use ExecuteSqlQueryV2 instead."
