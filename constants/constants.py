@@ -18,6 +18,7 @@ host = os.environ.get("CCOW_HOST", "http://cowapiservice:80")
 
 ENABLE_CONTEXTUAL_VECTOR_SEARCH = os.environ.get("ENABLE_CONTEXTUAL_VECTOR_SEARCH", "false").lower() == "true"
 ENABLE_CCOW_API_TOOLS = os.environ.get("ENABLE_CCOW_API_TOOLS", "true").lower() == "true"
+ENABLE_RULE_CREATION_TASK_CHAIN_PROCESS = os.environ.get("ENABLE_RULE_CREATION_TASK_CHAIN_PROCESS", "false").lower() == "true"
 
 # DASHBOARD
 URL_CCF_DASHBOARD_CONTROL_DETAILS = "/v2/aggregator/ccf-dashboard-control-details"
@@ -91,6 +92,7 @@ MCP_GET_RULES_TAG = "MCP"
 URL_FETCH_RULES = "/pc-api/v1/rules"
 URL_FETCH_TASKS = "/pc-api/v1/tasks"
 URL_CREATE_RULE = "/pc-api/v2/rules"
+URL_UPDATE_RULE = "/pc-api/v2/rules/update"
 URL_EXECUTE_RULE = "/pc-api/v2/rules/execute-rule"
 URL_FETCH_EXECUTION_PROGRESS = "/pc-api/v2/rules/fetch-execution-progress"
 URL_FETCH_FILE = "/pc-api/v1/storage/fetch-file"
