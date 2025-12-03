@@ -1178,3 +1178,9 @@ def generate_input_overview_presentation_with_validation_checkpoints(input_analy
     
     return "\n".join(presentation)
  
+def update_rule_api(rule_structure: Dict[str, Any], ctx: Optional[Context] = None) -> Dict[str, Any]:
+    headers = wsutils.create_header(ctx)
+    rule_id = f"rule_{abs(hash(str(rule_structure))) % 10000}"
+    wsutils.post(path=wsutils.build_api_url(
+        endpoint=constants.URL_UPDATE_RULE), data=json.dumps(rule_structure), header=headers)
+    return {"rule_id": rule_id, "status": "udpated", "message": "Rule updated successfully", "timestamp": datetime.now().isoformat()}
