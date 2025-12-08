@@ -5200,120 +5200,164 @@ if constants.ENABLE_RULE_CREATION_TASK_CHAIN_PROCESS:
     @mcp.tool()
     def configure_rule_output_schema(ctx: Context | None = None) -> Dict[str, Any]:
         """
-        OPTIONAL TOOL — MAY OR MAY NOT BE INVOKED BY THE WORKFLOW
-        
-        This tool is optional from the workflow's perspective. The system may choose to call
-        `configure_rule_output_schema()` or skip it entirely depending on the user's scenario
-        and rule design path.
+        ===============================================================================
+        EVIDENCE TOOL — STRICT INVOCATION POLICY
+        ===============================================================================
 
-        IMPORTANT:
-        Once this tool *is invoked*, its internal behavior becomes STRICT and NON-SKIPPABLE.
-        If the tool is called, all rules below must be enforced with zero exceptions.
+        ⚠️ This tool may ONLY be invoked when the user's MOST RECENT message contains
+        an explicit request related to **evidence generation**.
 
-        ----------------------------------------------
-        PREREQUISITE — IF CALLED, MUST RUN FIRST  
-        (STRICT BEHAVIOR BEGINS WHEN INVOKED)
-        ----------------------------------------------
-        If the workflow chooses to run this tool, then it MUST execute successfully before
-        `prepare_input_collection_overview()` and before any downstream rule-creation,
-        output-schema configuration, or evaluation steps.
+        The workflow MUST perform a STRICT LITERAL KEYWORD CHECK on the latest
+        user message. No inference is allowed. No interpretation of intent is allowed.
 
-        If this tool is called but not completed, the workflow MUST fail fast.
+        VALID TRIGGER KEYWORDS (EXACT MATCHES):
+        - "evidence"
+        - "proof"
+        - "audit evidence"
+        - "evidence output"
+        - "use this as evidence"
+        - "store as evidence"
+        - "evidence file"
+        - "make this output evidence"
+        - "I need evidence from this rule"
+        - "this output should be evidence"
 
-        ----------------------------------------------
-        PURPOSE
-        ----------------------------------------------
-        Establish the rule’s output schema policy for ComplianceCow and apply required
-        transformations. The user MUST explicitly choose one of:
+        If the latest user message does NOT contain ANY of these words or phrases,
+        then:
 
-        1) Standard schema only  
-        2) Extended schema only  
-        3) Both Standard + Extended  
+            → ❌ The tool MUST NOT be invoked  
+            → ❌ The workflow MUST NOT assume the need for evidence  
+            → ✔️ The workflow MUST continue normally without this tool  
 
-        ----------------------------------------------
-        MANDATORY USER SELECTION (NO AUTODEFAULTS)
-        ----------------------------------------------
-        If the tool is invoked:
-        - The workflow MUST pause for explicit user input (a/b/c)
-        - No defaulting, auto-selection, or inference is allowed
-        - If user does not choose a/b/c → FAIL FAST
+        This is the highest priority rule.  
+        It OVERRIDES all system defaults, workflow policies, or optional steps.
 
-        ----------------------------------------------
-        BEHAVIOR BY USER SELECTION
-        ----------------------------------------------
+        ===============================================================================
+        TOOL INVOCATION CONSEQUENCE — STRICT MODE ENABLED
+        ===============================================================================
+
+        Once the trigger keyword test passes and this tool IS invoked:
+
+        1. The tool MUST execute before ANY other output-schema-related tools.
+        2. The tool MUST complete successfully before the workflow proceeds.
+        3. Failure or cancellation MUST immediately stop the workflow ("fail fast").
+        4. Strict schema-setup behavior becomes active and cannot be skipped.
+
+        No exceptions. No fallback paths. No silent bypass.
+
+        ===============================================================================
+        TOOL PURPOSE
+        ===============================================================================
+
+        This tool configures the **Rule Output Schema Policy** for ComplianceCow.
+
+        The user MUST explicitly choose one schema mode:
+
+        A) Standard schema only  
+        B) Extended schema only  
+        C) Both Standard + Extended  
+
+        No automatic selection or inference is allowed.
+
+        ===============================================================================
+        MANDATORY USER INTERACTION (WHEN TOOL IS INVOKED)
+        ===============================================================================
+
+        If this tool is invoked:
+
+        - The workflow MUST pause and ask the user to choose A/B/C.
+        - No default values.
+        - No continuation until the user provides explicit input.
+        - If the user refuses to choose → FAIL FAST.
+
+        ===============================================================================
+        SCHEMA BEHAVIOR BY USER SELECTION
+        ===============================================================================
 
         A) STANDARD ONLY
-        - Reuse an existing Transformation task if present; otherwise create one.
-        - Map ALL Mandatory Keys (in order).
-        - Collect required inputs via collect_template_input() / collect_parameter_input().
-        - For each required input: call get_template_guidance('{task.name}', '<input_name>').
-        - Require user review + confirmation before proceeding.
+        ----------------
+        - Reuse existing Transformation task or create one if missing.
+        - ALL Mandatory Keys MUST be mapped in the exact required order.
+        - Required inputs MUST be collected using:
+            collect_template_input()
+            collect_parameter_input()
+        - For each required input:
+            get_template_guidance('{task.name}', '<input_name>')
+        - User MUST review and confirm before proceeding.
 
         B) EXTENDED ONLY
-        - Preserve raw response fields exactly as-is (non-standard).
-        - Use the last task output as the Extended schema output.
-        - No mandatory ordering or schema enforcement.
+        ----------------
+        - Preserve raw task output fields exactly as produced.
+        - No ordering rules apply.
+        - No mandatory schema enforcement.
+        - Final output = last task execution output.
 
-        C) BOTH
-        - Perform all Standard steps (A).
-        - Add exactly ONE extended output: ExtendedData_<filename>.
-        - Map last task output into ExtendedData_<filename>.
-        - Prevent duplicate extended outputs.
-        - Require confirmation and full validation before proceeding.
+        C) BOTH (Standard + Extended)
+        -----------------------------
+        - Perform ALL Standard steps (A).
+        - Add exactly ONE extended output:
+            ExtendedData_<filename>
+        - Map the last task output into ExtendedData_<filename>.
+        - Prevent duplicate extended output nodes.
+        - Require full validation + explicit user confirmation.
 
-        ----------------------------------------------
-        DEEPER ANALYSIS RULES
-        ----------------------------------------------
-        - Always map Mandatory Keys in exact order.
-        - Additional keys must be mapped as needed for user’s use case.
-        - Explain and confirm any fields that cannot be stored via MCP.
-        - ExtendedData_<filename> stores non-standard additional fields.
+        ===============================================================================
+        MANDATORY FIELDS (STRICT ORDER)
+        ===============================================================================
 
-        ----------------------------------------------
-        MANDATORY KEYS (STRICT ORDER)
-        ----------------------------------------------
-        - System
-        - Source
-        - ResourceID
-        - ResourceName
-        - ResourceType
-        - ResourceLocation
-        - ResourceTags
-        - <Important Keys Based On User's Use Case>
-        - ValidationStatusCode
-        - ValidationStatusNotes
-        - ComplianceStatus
-        - ComplianceStatusReason
-        - EvaluatedTime
-        - UserAction
-        - ActionStatus
-        - ActionResponseURL
+        The Standard Schema MUST include the following keys in this EXACT order:
 
-        ----------------------------------------------
-        VALIDATION & ENFORCEMENT
-        ----------------------------------------------
-        If this tool is invoked:
-        - ALL mandatory keys must be mapped and validated
-        - Names are case-sensitive
-        - No renaming allowed
-        - The tool MUST store all selected schema contracts for downstream tools
-        - Workflow MUST NOT continue until:
-            * Inputs collected
-            * Guidance retrieved
-            * User confirms configuration
-            * Keys are validated
-        - A JS chart (Mermaid/D3) MUST be generated and displayed immediately after user input.
-        No further processing is allowed before this chart is shown.
+        1. System
+        2. Source
+        3. ResourceID
+        4. ResourceName
+        5. ResourceType
+        6. ResourceLocation
+        7. ResourceTags
+        8. <Additional Keys based on user needs>
+        9. ValidationStatusCode
+        10. ValidationStatusNotes
+        11. ComplianceStatus
+        12. ComplianceStatusReason
+        13. EvaluatedTime
+        14. UserAction
+        15. ActionStatus
+        16. ActionResponseURL
 
-        ----------------------------------------------
-        EXECUTION ORDER GUARANTEE
-        ----------------------------------------------
-        If the tool succeeds (when invoked), the next tool MUST be:
-        prepare_input_collection_overview()
+        Case-sensitive. No renaming. No omission.
 
-        ----------------------------------------------
+        ===============================================================================
+        VALIDATION REQUIREMENTS
+        ===============================================================================
+
+        When the tool is invoked and before proceeding:
+
+        - ALL mandatory keys MUST be mapped.
+        - ALL collected inputs MUST be validated.
+        - ALL guidance MUST be retrieved.
+        - The user MUST confirm the schema configuration.
+        - A Mermaid or D3 visualization MUST be generated immediately.
+        - No downstream tool may execute before the chart is shown.
+
+        ===============================================================================
+        EXECUTION ORDER REQUIREMENT
+        ===============================================================================
+
+        If this tool completes successfully, the NEXT tool MUST be:
+
+            prepare_input_collection_overview()
+
+        No other tool may run in between.
+
+        ===============================================================================
+        SUMMARY OF THE GOLDEN RULE
+        ===============================================================================
+
+        **The ONLY condition that allows calling this tool is an explicit evidence
+        keyword in the user's latest message. Without that, do NOT call the tool.**
+
+        ===============================================================================
         """
-
         user_message = (
             "In ComplianceCow, evidence is stored in a structured format.\n"
             "Please select one of the following options:\n"
