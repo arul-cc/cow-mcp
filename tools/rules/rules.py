@@ -168,7 +168,7 @@ if constants.ENABLE_CCOW_API_TOOLS:
             }
     
     @mcp.tool()
-    def get_applications_for_tag(tag_name: str, ctx: Context | None = None) -> Dict[str, Any]:
+    def get_applications_for_tag(tag_name: str, additional_tags: Dict[str, List[str]] = None, ctx: Context | None = None) -> Dict[str, Any]:
         """
         Get available applications for a specific app tag.
 
@@ -176,10 +176,13 @@ if constants.ENABLE_CCOW_API_TOOLS:
         - Fetches all existing applications configured for the specified app tag.
         - Returns a list of applications with ID, name, and app type.
         - Used during rule execution to present application choices to the user.
+        - Optionally filters by additional tags (e.g., purpose, sourceSystem) for precise matching.
 
         Args:
             tag_name (str): The app tag name to get applications for. 
                             This parameter is mandatory and must not be empty.
+            additional_tags (Dict[str, List[str]]): Optional additional tags to filter applications.
+                            Example: {"purpose": ["source-repo"]} to find apps with specific purpose.
 
         Returns:
             dict: A dictionary containing available applications for the specified tag.
@@ -209,22 +212,57 @@ if constants.ENABLE_CCOW_API_TOOLS:
                     app_type = item.get("appType", "")
                     if isinstance(app_type, str) and app_type.endswith("::"):
                         app_type = app_type[:-2]
+                    
+                    # Get othersTags for additional filtering
+                    others_tags = item.get("othersTags", {})
+                    
+                    # If additional_tags provided, filter applications
+                    if additional_tags:
+                        match = True
+                        for key, values in additional_tags.items():
+                            app_tag_values = others_tags.get(key, [])
+                            # Check if any of the required values match
+                            if not any(v.lower() in [atv.lower() for atv in app_tag_values] for v in values):
+                                match = False
+                                break
+                        
+                        if not match:
+                            continue  # Skip this application
+                    
                     applications.append({
                         "id": item.get("id"),
                         "name": item.get("credentialName"),
-                        "appType": app_type
+                        "appType": app_type,
+                        "othersTags": others_tags
                     })
-                return {
-                    "success": True, 
-                    "tag_name": tag_name, 
-                    "applications": applications, 
-                    "count": len(applications), 
-                    "message": f"Found {len(applications)} applications for tag '{tag_name}'. User can select an existing application or create new credentials."
-                }    
+                
+                filter_msg = ""
+                if additional_tags:
+                    filter_msg = f" (filtered by {additional_tags})"
+                
+                if applications:
+                    return {
+                        "success": True, 
+                        "tag_name": tag_name, 
+                        "additional_tags": additional_tags,
+                        "applications": applications, 
+                        "count": len(applications), 
+                        "message": f"Found {len(applications)} applications for tag '{tag_name}'{filter_msg}. User can select an existing application or create new credentials."
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "tag_name": tag_name,
+                        "additional_tags": additional_tags,
+                        "applications": [],
+                        "count": 0,
+                        "message": f"No applications found for tag '{tag_name}'{filter_msg}. User can create new credentials."
+                    }
             else:
                 return {
                     "success": False,
                     "tag_name": tag_name,
+                    "additional_tags": additional_tags,
                     "applications": [],
                     "count": 0,
                     "message": f"No applications found for tag '{tag_name}'. User can create new credentials."
@@ -238,7 +276,7 @@ if constants.ENABLE_CCOW_API_TOOLS:
                 "count": 0,
                 "message": f"Error occurred while fetching applications for tag '{tag_name}': {e}"
             }
-        
+
     @mcp.tool()
     def attach_rule_to_control(rule_id: str, assessment_name: str, control_alias: str, control_id: str,create_evidence: bool = True, ctx: Context | None = None ) -> Dict[str, Any]:
 
@@ -3605,6 +3643,242 @@ def fetch_applications(ctx: Context | None = None) -> Dict[str, Any]:
         }
 
 @mcp.tool()
+def prepare_applications_for_execution(rule_name: str, ctx: Context | None = None) -> Dict[str, Any]:
+    """
+    Analyze rule tasks and prepare application configuration requirements for execution.
+
+    This tool helps users understand what applications are needed and whether they can
+    share applications across multiple tasks.
+
+    WHEN TO USE:
+    - Before calling execute_rule() to understand application requirements
+    - To identify if multiple tasks can share the same application
+    - To determine if unique identifiers are needed when using different applications for same appType
+
+    APPLICATION SHARING SCENARIOS:
+    1. **Shared Application**: User wants same credentials for all tasks of an appType
+       - Single application config with basic appTags (just appType)
+       - One application covers multiple tasks
+       
+    2. **Separate Applications**: User needs different credentials per task
+       - Must add unique identifier key (e.g., "purpose") to task appTags
+       - Each application config must include matching unique identifier
+
+    WORKFLOW:
+    1. Call this tool with rule_name
+    2. Review which tasks need applications
+    3. For tasks with same appType, decide: share or separate?
+    4. If sharing: Provide one application config per appType
+    5. If separate: Add unique identifiers and provide separate configs
+    6. Call execute_rule() with configured applications
+
+    Args:
+        rule_name: Name of the rule to analyze
+        
+    Returns:
+        Dict with analysis results and configuration guidance
+    """
+    try:
+        # Fetch the rule
+        rule_result = fetch_rule.fn(rule_name, ctx)
+        if not rule_result.get("success"):
+            return {
+                "success": False,
+                "error": f"Could not fetch rule '{rule_name}': {rule_result.get('error')}"
+            }
+        
+        rule_structure = rule_result.get("rule_structure", {})
+        tasks = rule_structure.get("spec", {}).get("tasks", [])
+        
+        # Analyze tasks by appType
+        app_type_tasks = {}  # {appType: [list of tasks]}
+        tasks_needing_apps = []
+        
+        for task in tasks:
+            app_tags = task.get("appTags", {})
+            app_types = app_tags.get("appType", [])
+            task_alias = task.get("alias", task.get("name", "unknown"))
+            task_name = task.get("name", "unknown")
+            
+            for app_type in app_types:
+                if app_type and app_type.lower() != "nocredapp":
+                    if app_type not in app_type_tasks:
+                        app_type_tasks[app_type] = []
+                    
+                    task_info = {
+                        "task_name": task_name,
+                        "task_alias": task_alias,
+                        "app_tags": app_tags,
+                        "has_unique_identifier": any(k not in ["appType", "environment", "execlevel"] for k in app_tags.keys())
+                    }
+                    app_type_tasks[app_type].append(task_info)
+                    tasks_needing_apps.append(task_info)
+        
+        # Identify scenarios requiring differentiation
+        needs_differentiation = {}
+        for app_type, task_list in app_type_tasks.items():
+            if len(task_list) > 1:
+                # Multiple tasks share same appType - user needs to decide
+                needs_differentiation[app_type] = {
+                    "tasks": task_list,
+                    "count": len(task_list),
+                    "recommendation": "Ask user if they want to use the SAME application for all tasks or DIFFERENT applications"
+                }
+        
+        # Build guidance
+        guidance = []
+        if needs_differentiation:
+            guidance.append("⚠️ Multiple tasks share the same application type. You need to decide:")
+            for app_type, info in needs_differentiation.items():
+                task_names = [t["task_alias"] for t in info["tasks"]]
+                guidance.append(f"  - {app_type}: Tasks {task_names}")
+                guidance.append(f"    Option A: Use SAME application for all (shared credentials)")
+                guidance.append(f"    Option B: Use DIFFERENT applications (requires unique identifiers)")
+        
+        return {
+            "success": True,
+            "rule_name": rule_name,
+            "app_type_tasks": app_type_tasks,
+            "tasks_needing_apps": tasks_needing_apps,
+            "needs_differentiation": needs_differentiation,
+            "total_app_types": len(app_type_tasks),
+            "guidance": guidance,
+            "next_steps": [
+                "1. For each appType with multiple tasks, ask user: 'Share same application or use different applications?'",
+                "2. If DIFFERENT: Call add_unique_identifier_to_task() for each task",
+                "3. Then configure applications with matching identifiers",
+                "4. Call execute_rule() with the configured applications"
+            ],
+            "message": f"Analysis complete. Found {len(app_type_tasks)} application types across {len(tasks_needing_apps)} tasks."
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to analyze rule: {str(e)}"
+        }
+
+
+@mcp.tool()
+def add_unique_identifier_to_task(rule_name: str, task_alias: str, identifier_key: str, identifier_value: str, ctx: Context | None = None) -> Dict[str, Any]:
+    """
+    Add a unique identifier key-value pair to a specific task's appTags.
+
+    Use this when multiple tasks share the same appType but need DIFFERENT applications.
+    The unique identifier allows the system to match each application to its specific task.
+
+    WHEN TO USE:
+    - After prepare_applications_for_execution() identifies tasks needing differentiation
+    - When user chooses "separate applications" option for tasks with same appType
+    - Before configuring separate applications for same appType tasks
+
+    NOT NEEDED WHEN:
+    - User wants to SHARE the same application across multiple tasks
+    - Task already has a unique appType (no other tasks share it)
+
+    WORKFLOW:
+    1. Call prepare_applications_for_execution() 
+    2. If user chooses separate applications for an appType:
+       - Call this tool for each task to add unique identifier
+       - Use same key but different values (e.g., "purpose": "source" vs "purpose": "target")
+    3. Configure applications with matching identifiers
+
+    Args:
+        rule_name: Name of the rule containing the task
+        task_alias: Alias of the task to update
+        identifier_key: Unique identifier key (e.g., "purpose", "sourceSystem")
+        identifier_value: Value for the identifier (e.g., "source-repo", "production-db")
+        
+    Returns:
+        Dict with update status and guidance
+    """
+    try:
+        # Fetch the rule
+        rule_result = fetch_rule.fn(rule_name, ctx)
+        if not rule_result.get("success"):
+            return {
+                "success": False,
+                "error": f"Could not fetch rule '{rule_name}': {rule_result.get('error')}"
+            }
+        
+        rule_structure = rule_result.get("rule_structure", {})
+        tasks = rule_structure.get("spec", {}).get("tasks", [])
+        
+        # Find and update the task
+        task_found = False
+        updated_task = None
+        for task in tasks:
+            if task.get("alias") == task_alias or task.get("name") == task_alias or task.get("aliasref") == task_alias:
+                task_found = True
+                
+                # Initialize appTags if not present
+                if "appTags" not in task:
+                    task["appTags"] = {}
+                
+                # Add the unique identifier as an array (consistent with other appTags)
+                task["appTags"][identifier_key] = [identifier_value]
+                updated_task = task
+                break
+        
+        if not task_found:
+            return {
+                "success": False,
+                "error": f"Task with alias '{task_alias}' not found in rule '{rule_name}'"
+            }
+        
+        # Update the rule
+        rule_structure["spec"]["tasks"] = tasks
+        
+        # Also update rule-level labels if this is the primary app type
+        primary_app_types = rule_structure.get("meta", {}).get("labels", {}).get("appType", [])
+        task_app_types = updated_task.get("appTags", {}).get("appType", [])
+        
+        if any(at in primary_app_types for at in task_app_types):
+            # This task's appType matches primary - update rule labels too
+            if "labels" not in rule_structure.get("meta", {}):
+                rule_structure["meta"]["labels"] = {}
+            rule_structure["meta"]["labels"][identifier_key] = [identifier_value]
+        
+        # Save the updated rule
+        if constants.ENABLE_RULE_CREATION_TASK_CHAIN_PROCESS:
+            update_result = create_rule.fn(rule_structure, True, ctx)
+        else:
+            update_result = create_rule.fn(rule_structure, ctx)
+        
+        if not update_result.get("success"):
+            return {
+                "success": False,
+                "error": f"Failed to update rule: {update_result.get('error')}"
+            }
+        
+        return {
+            "success": True,
+            "rule_name": rule_name,
+            "task_alias": task_alias,
+            "identifier_added": {
+                "key": identifier_key,
+                "value": identifier_value
+            },
+            "updated_app_tags": updated_task.get("appTags", {}),
+            "message": f"Added '{identifier_key}': ['{identifier_value}'] to task '{task_alias}'",
+            "next_step": f"When configuring application for this task, include '{identifier_key}': ['{identifier_value}'] in appTags",
+            "application_config_example": {
+                "applicationType": "<application_class_name>",
+                "applicationId": "<app_id> OR provide credentials",
+                "appTags": {
+                    "appType": task_app_types,
+                    identifier_key: [identifier_value]
+                }
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to add unique identifier: {str(e)}"
+        }
+
+@mcp.tool()
 def check_rule_status(rule_name: str, ctx: Context | None = None) -> Dict[str, Any]:
     """
     Quick status check showing what's been collected and what's missing.
@@ -4121,6 +4395,7 @@ def validate_application(selected_application: dict, cc_application: dict):
         - applicationId matches the record ID.
         - appTags and othersTags have matching keys and values (case-insensitive).
         - Identifies missing, extra, or mismatched tags.
+        - Supports unique identifier matching for multi-application scenarios.
 
     Returns:
         (bool, dict):
@@ -4139,27 +4414,31 @@ def validate_application(selected_application: dict, cc_application: dict):
         "mismatchedValues": []
     }
     is_valid = True
-    app_tags = selected_application.get("appTags",{})
-    others_tags = cc_application.get("othersTags",{})
+    app_tags = selected_application.get("appTags", {})
+    others_tags = cc_application.get("othersTags", {})
+    
     # Normalize all keys and values to lowercase for comparison
     app_tags_normalized = {k.lower(): sorted([v.lower() for v in vals]) for k, vals in app_tags.items()}
     others_tags_normalized = {k.lower(): sorted([v.lower() for v in vals]) for k, vals in others_tags.items()}
 
-    # Check missing keys
+    # Define standard tags that don't need strict matching
+    standard_tags = ["apptype", "environment", "execlevel"]
+    
+    # Check missing keys (excluding standard tags - those are handled separately)
     for key in app_tags_normalized:
-        if key not in others_tags_normalized:
+        if key not in standard_tags and key not in others_tags_normalized:
             is_valid = False
             result["missingInOthersTags"].append(key)
 
-    # Check extra keys
+    # Check extra keys (informational only - not a failure)
     for key in others_tags_normalized:
-        if key not in app_tags_normalized:
-            is_valid = True
+        if key not in app_tags_normalized and key not in standard_tags:
+            # Extra tags in the application are OK - just informational
             result["extraInOthersTags"].append(key)
 
-    # Check mismatched values for common keys
+    # Check mismatched values for common keys (excluding standard tags)
     for key in app_tags_normalized:
-        if key in others_tags_normalized:
+        if key in others_tags_normalized and key not in standard_tags:
             if app_tags_normalized[key] != others_tags_normalized[key]:
                 is_valid = False
                 result["mismatchedValues"].append({
@@ -4167,8 +4446,10 @@ def validate_application(selected_application: dict, cc_application: dict):
                     "expected": app_tags_normalized[key],
                     "found": others_tags_normalized[key]
                 })
+    
     if not is_valid:
         result["reconfigure"] = "Reconfigure the application and rule structure, then try again."
+        result["hint"] = "Ensure the unique identifier tags in your application config match those in the task's appTags."
 
     return is_valid, result
 
@@ -5040,7 +5321,29 @@ if constants.ENABLE_RULE_CREATION_TASK_CHAIN_PROCESS:
                 a. Use an existing application, or  
                 b. Run with new credentials (not persisted or saved as an application).
             - Proceed only after user confirmation for each tag.
-            ```json
+
+        APPLICATION-TASK MATCHING LOGIC:
+        ================================
+        - Applications are matched to tasks via 'appTags' labels
+        - This matching is NOT applicable for 'nocredapp' tasks
+        - **SHARED APPLICATION SUPPORT**: A single application CAN be used for multiple tasks
+        if the user confirms they want to share the same credentials
+        - When multiple tasks share the same appType AND require DIFFERENT applications,
+        unique identifier key-value pairs MUST be added to distinguish them
+
+        MATCHING SCENARIOS:
+        1. **One application per task**: Each task has unique appType → straightforward matching
+        2. **Shared application**: Multiple tasks share same appType AND same application
+        - User confirms: "Use same application for all [appType] tasks? (yes/no)"
+        - If yes: Single application covers all matching tasks
+        - Application appTags should match the common appType
+        3. **Multiple applications for same appType**: Different credentials needed for different tasks
+        - Add unique identifier key (e.g., "purpose", "sourceSystem") to distinguish
+        - Each application's appTags must include the unique identifier matching its target task
+
+        APPLICATION CONFIGURATION FORMAT:
+        For existing application (can be shared across multiple tasks):
+        ```json
             [
                 {
                     "applicationType": "[application_class_name from fetch_applications(appType)]",
@@ -5048,13 +5351,10 @@ if constants.ENABLE_RULE_CREATION_TASK_CHAIN_PROCESS:
                     "appTags": "[Complete object from rule spec.tasks[].appTags]"
                 }
             ]
-            ```
-            - If new: 
-                a. get_application_info(tag_name) → present credential types
-                b. collect credentials for chosen type → get user confirmation
-                c. ask for application URL: "Application URL for {appType} (optional - press Enter to skip):"
-                d. confirm complete configuration → move to next tag
-            ```json
+        ```
+
+        For new credentials:
+        ```json
             [
                 {
                     "applicationType": "[application_class_name from fetch_applications(appType)]",
@@ -5066,7 +5366,19 @@ if constants.ENABLE_RULE_CREATION_TASK_CHAIN_PROCESS:
                     "appTags": "[Complete object from rule spec.tasks[].appTags]"
                 }
             ]
-            ```
+        ```
+
+        WORKFLOW FOR MULTIPLE TASKS WITH SAME APPTYPE:
+        1. Detect tasks sharing same appType (excluding 'nocredapp')
+        2. Ask user: "Tasks [task1, task2] both require [appType]. Options:
+        a) Use SAME application/credentials for all tasks
+        b) Use DIFFERENT applications (requires unique identifiers)"
+        3. If SAME: User provides one application config with basic appTags
+        4. If DIFFERENT: 
+        - Prompt for unique identifier key (e.g., "purpose", "sourceSystem")
+        - User provides separate application configs with unique identifier values
+        - Update task appTags with matching unique identifiers
+
         4. Build applications array → get user confirmation
         5. Additional Inputs (optional):
             - Ask user: "Do you want to specify a date range for this execution?"
@@ -6529,6 +6841,28 @@ else:
                 a. Use an existing application, or  
                 b. Run with new credentials (not persisted or saved as an application).
             - Proceed only after user confirmation for each tag.
+
+        APPLICATION-TASK MATCHING LOGIC:
+        ================================
+        - Applications are matched to tasks via 'appTags' labels
+        - This matching is NOT applicable for 'nocredapp' tasks
+        - **SHARED APPLICATION SUPPORT**: A single application CAN be used for multiple tasks
+          if the user confirms they want to share the same credentials
+        - When multiple tasks share the same appType AND require DIFFERENT applications,
+          unique identifier key-value pairs MUST be added to distinguish them
+
+        MATCHING SCENARIOS:
+        1. **One application per task**: Each task has unique appType → straightforward matching
+        2. **Shared application**: Multiple tasks share same appType AND same application
+           - User confirms: "Use same application for all [appType] tasks? (yes/no)"
+           - If yes: Single application covers all matching tasks
+           - Application appTags should match the common appType
+        3. **Multiple applications for same appType**: Different credentials needed for different tasks
+           - Add unique identifier key (e.g., "purpose", "sourceSystem") to distinguish
+           - Each application's appTags must include the unique identifier matching its target task
+
+        APPLICATION CONFIGURATION FORMAT:
+        For existing application (can be shared across multiple tasks):
             ```json
             [
                 {
@@ -6538,11 +6872,8 @@ else:
                 }
             ]
             ```
-            - If new: 
-                a. get_application_info(tag_name) → present credential types
-                b. collect credentials for chosen type → get user confirmation
-                c. ask for application URL: "Application URL for {appType} (optional - press Enter to skip):"
-                d. confirm complete configuration → move to next tag
+
+        For new credentials:
             ```json
             [
                 {
@@ -6556,6 +6887,18 @@ else:
                 }
             ]
             ```
+
+        WORKFLOW FOR MULTIPLE TASKS WITH SAME APPTYPE:
+        1. Detect tasks sharing same appType (excluding 'nocredapp')
+        2. Ask user: "Tasks [task1, task2] both require [appType]. Options:
+           a) Use SAME application/credentials for all tasks
+           b) Use DIFFERENT applications (requires unique identifiers)"
+        3. If SAME: User provides one application config with basic appTags
+        4. If DIFFERENT: 
+           - Prompt for unique identifier key (e.g., "purpose", "sourceSystem")
+           - User provides separate application configs with unique identifier values
+           - Update task appTags with matching unique identifiers
+
         4. Build applications array → get user confirmation
         5. Additional Inputs (optional):
             - Ask user: "Do you want to specify a date range for this execution?"
