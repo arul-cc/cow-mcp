@@ -75,6 +75,7 @@ if "applications" in MCP_TOOLS:
     
 if "playbook" in MCP_TOOLS:
     from tools.playbook import usecasematcher
+    from tools.playbook import run_report
     from prompts.playbook import use_case_matcher_prompt
     
 def signal_handler(sig, frame):
