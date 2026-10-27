@@ -65,10 +65,11 @@ async def run_plan(
 
     When to call:
         Once, as soon as the plan is formed. This IS how you present the plan: do not write the plan table out again in your
-        reply. Call it again only if the plan changes, with a new plan_id.
+        reply. Call it again only if the plan changes; you get a new id back.
 
     Inputs:
-        plan_id: a short stable id you choose for this plan (letters, digits, _ . : -), reused in every run_step.
+        plan_id: a short name you choose for this plan (letters, digits, _ . : -). It is only a name: the id that identifies the run
+                 is returned to you, with a suffix that makes it unique.
         title: the plan's title.
         steps: every step of the plan, in order, each with
             id: e.g. "s1".
@@ -91,8 +92,9 @@ async def run_plan(
         assumptions: what the plan assumes or needs in place, one short item each.
 
     Returns:
-        {ok: true, ...}. An error means the plan did not hold together, for example a step pointing at a step that is not in the
-        plan: read it, fix it and call again.
+        {ok: true, plan_id, ...}. USE THE plan_id THAT COMES BACK, exactly, in every run_step and in get_run; never the name you
+        passed, and never an id from an earlier plan. An error means the plan did not hold together, for example a step pointing at
+        a step that is not in the plan: read it, fix it and call again.
     """
     return contract.record_plan(STORE, contract.clean_plan(plan_id, title, steps, needs, match, match_note, summary, assumptions))
 
@@ -119,7 +121,7 @@ async def run_step(
         before you move to the next step.
 
     Inputs:
-        plan_id, step_id: as in run_plan.
+        plan_id: the id run_plan returned. step_id: as in run_plan.
         status: started | done | reused | failed | skipped.
         summary: one or two sentences on what happened.
         object: what the step made or found: {type, name, id?, url?} where url is the platform link the specialist returned.
@@ -143,7 +145,7 @@ async def get_run(plan_id: str, ctx: Context | None = None) -> dict:
         When you resume a run that paused or that you were asked to continue, before you decide where to carry on.
 
     Inputs:
-        plan_id: as in run_plan.
+        plan_id: the id run_plan returned for the plan you are resuming.
 
     Returns:
         {plan_id, title, steps: [{id, n, name, status}], done, total, next_step_id}, or an error when runs are not kept here or

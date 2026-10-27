@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import threading
 from datetime import datetime, timezone
 from typing import Any
@@ -252,9 +253,22 @@ def state_of(records: list[dict]) -> dict | None:
     return {"plan_id": plan["plan_id"], "title": plan["title"], "steps": steps, "done": sum(1 for s in steps if s["status"] in TERMINAL), "total": len(steps), "next_step_id": nxt}
 
 
+_MINTED = re.compile(r"-[0-9a-f]{8}$")
+
+
+def mint_plan_id(name: str) -> str:
+    """A plan id nobody else has. The agent only picks a short name for the plan, and the same name comes back every run, so the id
+    that keys the stored run is the name with a random suffix: two chats can never write into one run, and a name that already
+    carries a suffix is not given a second."""
+    base = _MINTED.sub("", name)[:60]
+    return f"{base}-{secrets.token_hex(4)}"
+
+
 def record_plan(store: RunStore, plan: dict) -> dict:
+    """Stores the plan under a fresh id and says which id every later call must use."""
+    plan = {**plan, "plan_id": mint_plan_id(plan["plan_id"])}
     store.append(plan["plan_id"], {"kind": "plan", "plan": plan})
-    return {"ok": True, "plan_id": plan["plan_id"], "steps": len(plan["steps"]), "persisted": store.enabled}
+    return {"ok": True, "plan_id": plan["plan_id"], "steps": len(plan["steps"]), "persisted": store.enabled, "next": f"Use plan_id {plan['plan_id']!r} in every run_step and in get_run."}
 
 
 def record_step(store: RunStore, event: dict) -> dict:

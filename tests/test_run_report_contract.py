@@ -110,6 +110,26 @@ class CleanStep(unittest.TestCase):
         self.assertEqual(c.clean_step("p1", "s1", "done", object=Made())["object"], {"type": "control", "name": "MFA"})
 
 
+class MintedId(unittest.TestCase):
+    def test_keeps_the_name_and_adds_a_suffix_nobody_else_has(self):
+        ids = {c.mint_plan_id("okta-mfa-1") for _ in range(50)}
+        self.assertEqual(len(ids), 50)
+        for i in ids:
+            self.assertRegex(i, r"^okta-mfa-1-[0-9a-f]{8}$")
+            self.assertEqual(c.clean_step(i, "s1", "done")["plan_id"], i)
+
+    def test_does_not_give_a_name_that_already_has_a_suffix_a_second_one(self):
+        first = c.mint_plan_id("okta-mfa-1")
+        second = c.mint_plan_id(first)
+        self.assertRegex(second, r"^okta-mfa-1-[0-9a-f]{8}$")
+        self.assertNotEqual(first, second)
+
+    def test_stays_a_valid_id_whatever_the_name_length(self):
+        i = c.mint_plan_id("x" * 80)
+        self.assertLessEqual(len(i), 80)
+        c.clean_step(i, "s1", "done")
+
+
 class Store(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -118,6 +138,10 @@ class Store(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
+    def put(self, **over):
+        """Records a plan and returns the id it was given, which is what every later call has to use."""
+        return c.record_plan(self.store, plan(**over))["plan_id"]
+
     def test_without_a_directory_it_only_validates_and_keeps_nothing(self):
         off = c.RunStore("")
         self.assertEqual(c.record_plan(off, plan())["persisted"], False)
@@ -125,41 +149,66 @@ class Store(unittest.TestCase):
         with self.assertRaises(ValueError):
             c.get_run(off, "p1")
 
+    def test_says_which_id_to_use_from_now_on(self):
+        out = c.record_plan(self.store, plan())
+        self.assertRegex(out["plan_id"], r"^p1-[0-9a-f]{8}$")
+        self.assertIn(out["plan_id"], out["next"])
+
     def test_keeps_a_run_so_it_can_be_picked_up_and_says_what_comes_next(self):
-        c.record_plan(self.store, plan())
-        c.record_step(self.store, c.clean_step("p1", "s1", "started"))
-        out = c.record_step(self.store, c.clean_step("p1", "s1", "done"))
+        pid = self.put()
+        c.record_step(self.store, c.clean_step(pid, "s1", "started"))
+        out = c.record_step(self.store, c.clean_step(pid, "s1", "done"))
         self.assertEqual((out["done"], out["total"], out["next_step_id"]), (1, 2, "s2"))
-        run = c.get_run(self.store, "p1")
+        run = c.get_run(self.store, pid)
         self.assertEqual([s["status"] for s in run["steps"]], ["done", "pending"])
         self.assertEqual(run["next_step_id"], "s2")
 
     def test_refuses_a_step_of_an_unknown_plan_or_not_in_the_plan(self):
         with self.assertRaisesRegex(ValueError, "call run_plan first"):
             c.record_step(self.store, c.clean_step("p1", "s1", "done"))
-        c.record_plan(self.store, plan())
+        pid = self.put()
         with self.assertRaisesRegex(ValueError, "not in the plan"):
-            c.record_step(self.store, c.clean_step("p1", "s9", "done"))
+            c.record_step(self.store, c.clean_step(pid, "s9", "done"))
 
-    def test_a_new_plan_under_the_same_id_starts_again(self):
-        c.record_plan(self.store, plan())
-        c.record_step(self.store, c.clean_step("p1", "s1", "done"))
-        c.record_plan(self.store, plan(title="Changed"))
-        self.assertEqual(c.get_run(self.store, "p1")["done"], 0)
+    def test_the_name_alone_is_not_the_id_of_the_run(self):
+        self.put()
+        with self.assertRaisesRegex(ValueError, "call run_plan first"):
+            c.record_step(self.store, c.clean_step("p1", "s1", "done"))
+        with self.assertRaises(ValueError):
+            c.get_run(self.store, "p1")
+
+    def test_two_chats_that_name_their_plans_alike_keep_their_runs_apart(self):
+        a = self.put()
+        b = self.put()
+        self.assertNotEqual(a, b)
+        c.record_step(self.store, c.clean_step(a, "s1", "done"))
+        c.record_step(self.store, c.clean_step(a, "s2", "done"))
+        c.record_step(self.store, c.clean_step(b, "s1", "started"))
+        self.assertEqual((c.get_run(self.store, a)["done"], c.get_run(self.store, a)["next_step_id"]), (2, None))
+        self.assertEqual((c.get_run(self.store, b)["done"], c.get_run(self.store, b)["next_step_id"]), (0, "s1"))
+        self.assertEqual(len(os.listdir(self.dir.name)), 2)
+
+    def test_a_changed_plan_is_a_new_run(self):
+        first = self.put()
+        c.record_step(self.store, c.clean_step(first, "s1", "done"))
+        second = self.put(title="Changed")
+        self.assertNotEqual(first, second)
+        self.assertEqual(c.get_run(self.store, second)["done"], 0)
+        self.assertEqual(c.get_run(self.store, first)["done"], 1)
 
     def test_the_file_is_named_by_the_plan_alone_and_cannot_leave_the_directory(self):
         with self.assertRaises(ValueError):
             c.get_run(self.store, "../escape")
-        c.record_plan(self.store, plan())
-        self.assertEqual(os.listdir(self.dir.name), ["p1.jsonl"])
-        with open(os.path.join(self.dir.name, "p1.jsonl")) as f:
+        pid = self.put()
+        self.assertEqual(os.listdir(self.dir.name), [f"{pid}.jsonl"])
+        with open(os.path.join(self.dir.name, f"{pid}.jsonl")) as f:
             self.assertEqual(json.loads(f.readline())["kind"], "plan")
 
     def test_skips_a_line_it_cannot_read(self):
-        c.record_plan(self.store, plan())
-        with open(os.path.join(self.dir.name, "p1.jsonl"), "a") as f:
+        pid = self.put()
+        with open(os.path.join(self.dir.name, f"{pid}.jsonl"), "a") as f:
             f.write("not json\n")
-        self.assertEqual(c.get_run(self.store, "p1")["total"], 2)
+        self.assertEqual(c.get_run(self.store, pid)["total"], 2)
 
 
 if __name__ == "__main__":
