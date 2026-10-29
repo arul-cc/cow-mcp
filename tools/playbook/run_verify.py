@@ -147,8 +147,10 @@ async def check_rule(facts: Facts, reader: Reader) -> dict:
     made = facts.object
     if not made or not made.get("name"):
         return verdict(None, "the report does not name the rule", settled=True)
-    kind = str(made.get("type") or "").casefold()
-    if kind not in ("rule", "evidence"):
+    label = _norm(made.get("type"))
+    # Specialists write the layer into the label ("L1 Rule", "L3 Evidence"), so it is the word in it that counts.
+    kind = "evidence" if "evidence" in label else "rule" if "rule" in label else ""
+    if not kind:
         return verdict(None, f"a {made.get('type') or 'thing of unknown type'} reported by a rule step is not something that can be checked", settled=True)
     if kind == "evidence" and not made.get("id"):
         return verdict(None, "the report does not name the evidence's id", settled=True)

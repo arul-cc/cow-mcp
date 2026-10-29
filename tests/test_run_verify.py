@@ -228,6 +228,36 @@ class Evidence(unittest.TestCase):
         self.assertIn("does not name the evidence's id", result["problem"])
         self.assertEqual(reader.calls, [])
 
+    def test_the_layer_in_the_label_does_not_matter(self):
+        """The Okta run on 29 October labelled its objects "L1 Rule", "L2 Rule" and "L3 Evidence"."""
+        reader = FakeReader(controls={"ctl-3": EVIDENCE_CONTROL})
+        for label in ("L3 Evidence", "evidence", "EVIDENCE", "Evidence "):
+            objects = {**self.objects, "s4": {"type": label, "name": "OktaMFASupportingEvidence", "id": "ev-2"}}
+            self.assertEqual(check("s4", reader, objects=objects), {"verified": True}, label)
+
+    def test_a_rule_labelled_with_its_layer_is_checked_as_a_rule(self):
+        for label in ("L1 Rule", "L2 Rule", "Rule", "rule"):
+            objects = {**OBJECTS, "s4": {"type": label, "name": "GetUsers", "id": "rule-4"}}
+            self.assertEqual(check("s4", healthy(), objects=objects), {"verified": True}, label)
+        objects = {**OBJECTS, "s4": {"type": "L1 Rule", "name": "GetUsers", "id": "rule-4"}}
+        self.assertIs(check("s4", FakeReader(controls={"ctl-3": {"id": "ctl-3"}}), objects=objects)["verified"], False)
+
+    def test_a_label_with_both_words_is_evidence(self):
+        reader = FakeReader(controls={"ctl-3": EVIDENCE_CONTROL})
+        objects = {**self.objects, "s4": {"type": "L3 Rule evidence", "name": "OktaMFASupportingEvidence", "id": "ev-2"}}
+        self.assertEqual(check("s4", reader, objects=objects), {"verified": True})
+        gone = FakeReader(controls={"ctl-3": {"id": "ctl-3", "ruleId": "rule-4", "rule": {"name": "GetUsers"}}})
+        result = check("s4", gone, objects=objects)
+        self.assertIs(result["verified"], False)
+        self.assertIn("no evidence", result["problem"])
+
+    def test_a_label_with_neither_word_is_still_unknown(self):
+        for label in ("L1 Asset", "workflow", "", "Control"):
+            objects = {**self.objects, "s4": {"type": label, "name": "Something", "id": "x-1"}}
+            reader = healthy()
+            self.assertIs(check("s4", reader, objects=objects)["verified"], None, label)
+            self.assertEqual(reader.calls, [], label)
+
     def test_a_rule_step_that_reported_something_else_is_unknown_not_false(self):
         objects = {**self.objects, "s4": {"type": "workflow", "name": "Something", "id": "w-1"}}
         reader = healthy()
