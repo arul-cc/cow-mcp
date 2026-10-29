@@ -237,18 +237,49 @@ class RunStore:
         return records
 
 
-def state_of(records: list[dict]) -> dict | None:
-    """The plan and each step's latest status, from what was stored. None when there was no plan."""
+def ledger_of(records: list[dict]) -> dict | None:
+    """Everything stored about one plan: the plan, and for each step its latest report, the last object it named, the last
+    needs it raised and how that object checked out. None when there was no plan.
+
+    A later plan record starts the ledger over. A new report for a step makes an earlier check of it stale, so it is dropped."""
     plan = None
-    status: dict[str, str] = {}
+    latest: dict[str, dict] = {}
+    objects: dict[str, dict] = {}
+    checks: dict[str, dict] = {}
     for r in records:
-        if r.get("kind") == "plan":
-            plan, status = r["plan"], {}
-        elif r.get("kind") == "step" and plan:
-            status[r["event"]["step_id"]] = r["event"]["status"]
+        kind = r.get("kind")
+        if kind == "plan":
+            plan, latest, objects, checks = r["plan"], {}, {}, {}
+        elif kind == "step" and plan:
+            event = r["event"]
+            latest[event["step_id"]] = event
+            checks.pop(event["step_id"], None)
+            if event.get("object"):
+                objects[event["step_id"]] = event["object"]
+        elif kind == "verify" and plan and r.get("step_id") in latest:
+            checks[r["step_id"]] = r["result"]
     if not plan:
         return None
-    steps = [{"id": s["id"], "n": s["n"], "name": s["name"], "status": status.get(s["id"], "pending")} for s in plan["steps"]]
+    steps = []
+    for spec in plan["steps"]:
+        event = latest.get(spec["id"], {})
+        steps.append({"spec": spec, "status": event.get("status", "pending"), "summary": event.get("summary"), "needs": event.get("needs") or [],
+                      "session": event.get("session"), "object": objects.get(spec["id"]), "check": checks.get(spec["id"])})
+    return {"plan": plan, "steps": steps}
+
+
+def state_of(records: list[dict]) -> dict | None:
+    """The plan and each step's latest status, from what was stored. None when there was no plan."""
+    ledger = ledger_of(records)
+    if not ledger:
+        return None
+    plan = ledger["plan"]
+    steps = []
+    for s in ledger["steps"]:
+        item = {"id": s["spec"]["id"], "n": s["spec"]["n"], "name": s["spec"]["name"], "status": s["status"]}
+        if s["check"] is not None:
+            item["verified"] = s["check"]["verified"]
+        steps.append(item)
     nxt = next((s["id"] for s in steps if s["status"] not in TERMINAL), None)
     return {"plan_id": plan["plan_id"], "title": plan["title"], "steps": steps, "done": sum(1 for s in steps if s["status"] in TERMINAL), "total": len(steps), "next_step_id": nxt}
 

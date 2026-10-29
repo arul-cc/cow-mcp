@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 from mcpconfig.config import mcp
 from tools.playbook import run_report_contract as contract
+from tools.playbook import run_verify
+from tools.playbook.run_verify_platform import PlatformReader
 
 # Optional. Set it to keep each plan's reports on disk, which lets a paused run be picked up again with get_run.
 STORE = contract.RunStore(os.environ.get("RUN_REPORT_DIR", "").strip())
@@ -129,10 +131,14 @@ async def run_step(
         needs: anything the user must now do because of this step, e.g. enter a credential: each {what, url?}.
 
     Returns:
-        {ok: true, ...} and, when runs are kept, how many steps are done and which step comes next. An error means the shape
-        was wrong or the step is not in the plan: read it, fix it and call again.
+        {ok: true, ...} and, when runs are kept, how many steps are done and which step comes next. For "done" and "reused" it
+        also says whether the platform really has what you reported: verified true, false or null (null: it could not be checked).
+        When verified is false, `problem` says what is wrong: the object is not there or is not what you named. Put that right (redo
+        the step, or report the right object) and report the step again. An error means the shape was wrong or the step is not in
+        the plan: read it, fix it and call again.
     """
-    return contract.record_step(STORE, contract.clean_step(plan_id, step_id, status, summary, object, session, needs))
+    event = contract.clean_step(plan_id, step_id, status, summary, object, session, needs)
+    return await run_verify.report_step(STORE, event, PlatformReader(ctx))
 
 
 @mcp.tool()
@@ -148,7 +154,32 @@ async def get_run(plan_id: str, ctx: Context | None = None) -> dict:
         plan_id: the id run_plan returned for the plan you are resuming.
 
     Returns:
-        {plan_id, title, steps: [{id, n, name, status}], done, total, next_step_id}, or an error when runs are not kept here or
-        the plan is unknown.
+        {plan_id, title, steps: [{id, n, name, status, verified?}], done, total, next_step_id}, or an error when runs are not kept
+        here or the plan is unknown. `verified` is there once the platform has been asked about the step: false means what the step
+        reported is not on the platform and the step has to be redone.
     """
     return contract.get_run(STORE, plan_id)
+
+
+@mcp.tool()
+async def finish_run(plan_id: str, ctx: Context | None = None) -> dict:
+    """
+    Purpose:
+        Ask whether the run is really finished. It looks at the platform now and checks every step you reported against it, so it
+        catches a step that was reported but is not there, and an object that has been removed or replaced since.
+
+    When to call:
+        When you believe every step is done, before you write your final answer. Call it again after you have fixed what it lists,
+        until it says the run is complete. It changes nothing, so it is safe to call as often as you like.
+
+    Inputs:
+        plan_id: the id run_plan returned for the plan.
+
+    Returns:
+        {plan_id, complete, counts, open, failed, mismatched, unverified, needs, next_step, message}.
+        complete is true only when no step is open or failed and none of the steps you reported is missing from the platform.
+        open: steps not finished. failed: steps reported failed. mismatched: steps reported done that the platform does not have as
+        reported, each with the problem. unverified: steps that could not be checked (this does not stop the run being complete).
+        needs: what the user still has to do. `message` says what to do next; do what it says and call finish_run again.
+    """
+    return await run_verify.finish_run(STORE, plan_id, PlatformReader(ctx))
