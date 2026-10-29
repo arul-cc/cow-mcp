@@ -43,13 +43,16 @@ class FakeReader:
     """The platform. An answer can be a list, which is read one answer at a time and then repeats its last: how a new object is
     missing for a moment and then there."""
 
-    def __init__(self, controls=None, scopes=None, apps=None, links=None, down=False):
+    def __init__(self, controls=None, scopes=None, apps=None, links=None, down=False, refused=False):
         self.controls, self.scopes, self.apps, self.links_ = controls or {}, scopes or {}, apps or {}, links or {}
         self.down = down
+        self.refused = refused
         self.calls = []
 
     def _pick(self, table, key, what):
         self.calls.append((what, key))
+        if self.refused:
+            return Lookup(None, problem="Unexpected response status: 403", final=True)
         if self.down:
             return Lookup(None, problem="HTTP 502")
         answer = table.get(key)
@@ -136,6 +139,14 @@ class Controls(unittest.TestCase):
         result = check("s3", FakeReader(down=True))
         self.assertIs(result["verified"], None)
         self.assertIn("HTTP 502", result["problem"])
+
+    def test_a_platform_that_refuses_our_credentials_is_not_asked_again(self):
+        reader = FakeReader(refused=True)
+        result = check("s3", reader, retries=5)
+        self.assertIs(result["verified"], None)
+        self.assertIn("403", result["problem"])
+        self.assertEqual(len(reader.calls), 1, "a refusal will not change by waiting")
+        self.assertNotIn("settled", result)
 
     def test_a_report_without_an_id_is_unknown_and_is_not_looked_at_again(self):
         reader = healthy()
@@ -338,6 +349,12 @@ class WhatThePlatformSays(unittest.TestCase):
         self.assertIs(gone.found, False)
         for other in ("Unexpected response status: 403", "Unexpected response status: 500", "Unexpected response status: 502", "Facing error : Request timed out."):
             self.assertIsNone(v.answer_of({"error": other}, "control x").found, other)
+
+    def test_a_refusal_is_final_and_other_failures_are_not(self):
+        for refused in ("Unexpected response status: 401", "Unexpected response status: 403"):
+            self.assertTrue(v.answer_of({"error": refused}, "x").final, refused)
+        for other in ("Unexpected response status: 500", "Unexpected response status: 502", "Facing error : Request timed out."):
+            self.assertFalse(v.answer_of({"error": other}, "x").final, other)
 
     def test_a_text_answer_is_a_failure_to_answer(self):
         self.assertIsNone(v.answer_of("Facing error  :  boom", "control x").found)

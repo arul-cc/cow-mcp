@@ -29,6 +29,8 @@ class Lookup:
     found: bool | None
     data: Any = None
     problem: str | None = None
+    # True when asking again will not change the answer, as when the platform refuses the caller's credentials.
+    final: bool = False
 
 
 _STATUS = re.compile(r"status:?\s*(\d{3})")
@@ -42,9 +44,10 @@ def answer_of(response: Any, what: str) -> Lookup:
     if isinstance(response, dict) and "error" in response:
         text = str(response["error"])
         match = _STATUS.search(text)
-        if match and match.group(1) == "404":
+        status = match.group(1) if match else ""
+        if status == "404":
             return Lookup(False, problem=f"{what} was not found")
-        return Lookup(None, problem=text[:200])
+        return Lookup(None, problem=text[:200], final=status in ("401", "403"))
     return Lookup(True, data=response)
 
 
@@ -112,7 +115,7 @@ def _close(a: Any, b: Any) -> bool:
 
 
 def _unknown(lookup: Lookup, what: str) -> dict:
-    return verdict(None, f"could not check {what}: {lookup.problem or 'the platform did not answer'}")
+    return verdict(None, f"could not check {what}: {lookup.problem or 'the platform did not answer'}", settled=lookup.final)
 
 
 def _parent(spec: dict, objects: dict[str, dict]) -> dict | None:
