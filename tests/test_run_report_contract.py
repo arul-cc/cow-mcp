@@ -41,7 +41,7 @@ class CleanPlan(unittest.TestCase):
 
 TREE = [
     {"id": "s1", "n": 1, "name": "Okta Users", "type": "Control Setup", "specialist": "Rules Specialist", "kind": "control", "scope": "L1", "position": "2.1"},
-    {"id": "s2", "n": 2, "name": "Users MFA test", "type": "Rule Setup", "specialist": "Rules Specialist", "kind": "rule", "scope": "L1", "parent": "s1", "details": "Rule for control 2.1"},
+    {"id": "s2", "n": 2, "name": "Users MFA test", "type": "Rule Setup", "specialist": "Rules Specialist", "kind": "rule", "scope": "L1", "parent": "s1", "makes": "rule", "details": "Rule for control 2.1"},
     {"id": "s3", "n": 3, "name": "MFA Check", "type": "Control Setup", "specialist": "Rules Specialist", "kind": "control", "scope": "L2", "position": "5.6"},
     {"id": "s4", "n": 4, "name": "Feed Okta Users into MFA Check", "type": "Control Dependency", "specialist": "Rules Specialist", "kind": "dependency", "scope": "L1", "ends": {"from_step": "s1", "to_step": "s3"}},
 ]
@@ -83,6 +83,50 @@ class PlanStructure(unittest.TestCase):
         for over in (dict(match="mostly"), dict(assumptions="x"), dict(assumptions=[""]), dict(assumptions=["x"] * 31), dict(summary="x" * 1001)):
             with self.assertRaises(ValueError, msg=str(over)):
                 plan(**over)
+
+
+class WhatARuleStepMakes(unittest.TestCase):
+    """A rule step says in the plan whether it makes a rule or SQL evidence, from a closed list, so nothing has to read a label."""
+
+    RULE = {"id": "s3", "n": 3, "name": "Check", "type": "Rule Setup", "specialist": "Rules Specialist", "kind": "rule", "scope": "L1", "parent": "s2", "makes": "rule"}
+
+    def made(self, **over):
+        return plan(steps=[*STEPS, {**self.RULE, **over}])["steps"][-1]
+
+    def test_the_two_values_are_kept(self):
+        for value in c.MAKES:
+            self.assertEqual(self.made(makes=value)["makes"], value)
+        self.assertEqual(c.MAKES, ("rule", "evidence"))
+
+    def test_a_rule_step_that_says_nothing_is_refused(self):
+        steps = [{k: v for k, v in self.RULE.items() if k != "makes"}]
+        with self.assertRaises(ValueError) as caught:
+            plan(steps=[*STEPS, *steps])
+        self.assertIn("needs makes", str(caught.exception))
+        self.assertIn("rule, evidence", str(caught.exception))
+
+    def test_a_step_that_is_not_a_rule_needs_nothing(self):
+        self.assertNotIn("makes", plan(steps=STEPS)["steps"][0])
+
+    def test_anything_else_is_refused_and_the_error_lists_the_values(self):
+        for bad in ("sql", "Rule", "EVIDENCE", "rule ", "", 3, True, ["rule"], None):
+            with self.assertRaises(ValueError, msg=repr(bad)) as caught:
+                self.made(makes=bad)
+            self.assertIn("rule, evidence", str(caught.exception))
+
+    def test_only_a_rule_step_can_say_it(self):
+        for kind in ("app", "scope", "control", "link", "dependency", "action", "workflow", "report", "step"):
+            extra = {"ends": {"from_step": "s1", "to_step": "s2"}} if kind in c.JOINS else {}
+            with self.assertRaises(ValueError, msg=kind) as caught:
+                self.made(kind=kind, makes="evidence", **extra)
+            self.assertIn("only for a rule step", str(caught.exception))
+
+    def test_it_survives_being_stored_and_read_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = c.RunStore(d)
+            plan_id = c.record_plan(store, plan(steps=[*STEPS, {**self.RULE, "makes": "evidence"}]))["plan_id"]
+            ledger = c.ledger_of(store.read(plan_id))
+            self.assertEqual(ledger["steps"][-1]["spec"]["makes"], "evidence")
 
 
 class CleanStep(unittest.TestCase):

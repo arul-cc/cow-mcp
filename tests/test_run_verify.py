@@ -19,9 +19,9 @@ def step(i, kind, **more):
 STEPS = [
     step(1, "app", scope="App"),
     step(2, "scope", scope="Application Scope"),
-    step(3, "control"),
-    step(4, "rule", parent="s3"),
-    step(5, "control", scope="L2"),
+    step(3, "control", position="5"),
+    step(4, "rule", parent="s3", makes="rule"),
+    step(5, "control", scope="L2", position="5.6", parent="s3"),
     step(6, "link", ends={"from_step": "s3", "to_step": "s5"}),
     step(7, "dependency", ends={"from_step": "s3", "to_step": "s5"}),
     step(8, "action"),
@@ -78,21 +78,29 @@ class FakeReader:
         return Lookup(bool(found), found)
 
 
+def control3(**over):
+    return {"id": "ctl-3", "name": "Okta", "displayable": "5", "planId": "plan-a", "ruleId": "rule-4", "rule": {"name": "GetUsers"}, **over}
+
+
+def control5(**over):
+    return {"id": "ctl-5", "name": "MFA", "displayable": "5.6", "parentControlId": "ctl-3", "planId": "plan-b",
+            "dependedInputs": {"InputFile1": {"planControlId": "ctl-3", "outputName": "Out"}}, **over}
+
+
 def healthy():
     return FakeReader(
-        controls={
-            "ctl-3": {"id": "ctl-3", "name": "Okta", "planId": "plan-a", "ruleId": "rule-4", "rule": {"name": "GetUsers"}},
-            "ctl-5": {"id": "ctl-5", "name": "MFA", "planId": "plan-b", "dependedInputs": {"InputFile1": {"planControlId": "ctl-3", "outputName": "Out"}}},
-        },
+        controls={"ctl-3": control3(), "ctl-5": control5()},
         scopes={"scope-1": {"id": "scope-1", "name": "veza-scope"}},
         apps={"app-1": {"id": "app-1"}},
         links={("ctl-3", "ctl-5"): [{"id": "link-6"}]},
     )
 
 
-def facts(step_id, objects=None):
+def facts(step_id, objects=None, spec=None):
     objects = OBJECTS if objects is None else objects
     specs = {s["id"]: s for s in STEPS}
+    if spec:
+        specs[step_id] = {**specs[step_id], **spec}
     return v.Facts(spec=specs[step_id], object=objects.get(step_id), objects=objects, specs=specs)
 
 
@@ -100,13 +108,13 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def check(step_id, reader, objects=None, retries=2):
-    return run(v.verify_step(facts(step_id, objects), reader, retries=retries, delay=0))
+def check(step_id, reader, objects=None, retries=2, spec=None):
+    return run(v.verify_step(facts(step_id, objects, spec), reader, retries=retries, delay=0))
 
 
 class Controls(unittest.TestCase):
-    def test_a_control_that_is_there_is_verified(self):
-        self.assertEqual(check("s3", healthy()), {"verified": True})
+    def test_a_control_that_is_there_is_verified_and_the_platforms_name_comes_back(self):
+        self.assertEqual(check("s3", healthy()), {"verified": True, "as_found": {"name": "Okta"}})
 
     def test_a_control_that_is_not_there_is_false_after_looking_again(self):
         reader = FakeReader()
@@ -116,24 +124,53 @@ class Controls(unittest.TestCase):
         self.assertEqual(len(reader.calls), 3, "one look and two more, in case the platform is a moment behind")
 
     def test_a_control_that_appears_a_moment_later_is_verified(self):
-        reader = FakeReader(controls={"ctl-3": [None, {"id": "ctl-3", "name": "Okta"}]})
-        self.assertEqual(check("s3", reader), {"verified": True})
+        reader = FakeReader(controls={"ctl-3": [None, control3()]})
+        self.assertIs(check("s3", reader)["verified"], True)
         self.assertEqual(len(reader.calls), 2)
 
-    def test_a_name_with_the_layer_added_to_it_is_still_the_same_control(self):
-        reader = FakeReader(controls={"ctl-3": {"id": "ctl-3", "name": "Okta"}})
-        objects = {**OBJECTS, "s3": {"type": "control", "name": "Okta (L2)", "id": "ctl-3"}}
-        self.assertEqual(check("s3", reader, objects=objects), {"verified": True})
+    def test_what_a_model_calls_the_control_does_not_matter_and_the_platforms_name_is_returned(self):
+        objects = {**OBJECTS, "s3": {"type": "L2 Control", "name": "Whatever the specialist wrote", "id": "ctl-3"}}
+        self.assertEqual(check("s3", healthy(), objects=objects), {"verified": True, "as_found": {"name": "Okta"}})
 
-    def test_a_control_with_another_name_is_false(self):
-        reader = FakeReader(controls={"ctl-3": {"id": "ctl-3", "name": "Something else"}})
+    def test_a_control_at_another_number_than_the_plan_puts_it_is_false(self):
+        reader = FakeReader(controls={"ctl-3": control3(displayable="7")})
         result = check("s3", reader)
         self.assertIs(result["verified"], False)
-        self.assertIn("Something else", result["problem"])
+        self.assertIn("'7'", result["problem"])
+        self.assertIn("'5'", result["problem"])
 
-    def test_names_are_compared_without_regard_to_case_or_spacing(self):
-        reader = FakeReader(controls={"ctl-3": {"id": "ctl-3", "name": "  OKTA  "}})
-        self.assertEqual(check("s3", reader), {"verified": True})
+    def test_the_number_is_compared_exactly_apart_from_surrounding_space(self):
+        self.assertIs(check("s3", FakeReader(controls={"ctl-3": control3(displayable=" 5 ")}))["verified"], True)
+        self.assertIs(check("s3", FakeReader(controls={"ctl-3": control3(displayable="05")}))["verified"], False)
+        self.assertIs(check("s3", FakeReader(controls={"ctl-3": control3(displayable="5.0")}))["verified"], False)
+
+    def test_a_number_that_is_only_part_of_the_planned_number_is_false(self):
+        """5.6 is the control above 5.6.1, not the same control; 6.1 is part of 5.6.1 and is another control altogether."""
+        for on_platform in ("5.6", "6.1", "5", "5.6.1.2"):
+            reader = FakeReader(controls={"ctl-3": control3(displayable=on_platform)})
+            self.assertIs(check("s3", reader, spec={"position": "5.6.1"})["verified"], False, on_platform)
+        self.assertIs(check("s3", FakeReader(controls={"ctl-3": control3(displayable="5.6.1")}), spec={"position": "5.6.1"})["verified"], True)
+
+    def test_a_plan_that_gives_no_number_does_not_compare_one(self):
+        reader = FakeReader(controls={"ctl-3": control3(displayable="anything")})
+        self.assertIs(check("s3", reader, spec={"position": None})["verified"], True)
+
+    def test_a_control_under_another_control_than_the_plan_puts_it_is_false(self):
+        reader = healthy()
+        reader.controls["ctl-5"] = control5(parentControlId="ctl-9")
+        result = check("s5", reader)
+        self.assertIs(result["verified"], False)
+        self.assertIn("ctl-9", result["problem"])
+        self.assertIn("ctl-3", result["problem"])
+
+    def test_a_control_with_no_control_above_it_on_the_platform_is_false_when_the_plan_has_one(self):
+        reader = healthy()
+        reader.controls["ctl-5"] = control5(parentControlId=None)
+        self.assertIs(check("s5", reader)["verified"], False)
+
+    def test_a_parent_that_did_not_report_an_id_is_not_compared(self):
+        objects = {**OBJECTS, "s3": {"type": "control", "name": "Okta"}}
+        self.assertIs(check("s5", healthy(), objects=objects)["verified"], True)
 
     def test_a_platform_that_does_not_answer_is_unknown_never_false(self):
         result = check("s3", FakeReader(down=True))
@@ -161,25 +198,20 @@ class Controls(unittest.TestCase):
 
 class Rules(unittest.TestCase):
     def test_a_rule_attached_by_id_is_verified(self):
-        self.assertEqual(check("s4", healthy()), {"verified": True})
+        self.assertEqual(check("s4", healthy()), {"verified": True, "as_found": {"name": "GetUsers"}})
 
-    def test_a_rule_attached_by_name_is_verified(self):
-        reader = FakeReader(controls={"ctl-3": {"id": "ctl-3", "rule": {"name": "getusers"}}})
-        self.assertEqual(check("s4", reader), {"verified": True})
+    def test_a_rule_that_was_renamed_is_still_the_one_attached_and_its_platform_name_comes_back(self):
+        reader = FakeReader(controls={"ctl-3": control3(rule={"name": "Renamed since"})})
+        self.assertEqual(check("s4", reader), {"verified": True, "as_found": {"name": "Renamed since"}})
 
-    def test_a_rule_that_was_renamed_is_still_the_one_attached_when_its_id_matches(self):
-        reader = FakeReader(controls={"ctl-3": {"id": "ctl-3", "ruleId": "rule-4", "rule": {"name": "Renamed since"}}})
-        self.assertEqual(check("s4", reader), {"verified": True})
-
-    def test_another_rule_on_the_control_is_false(self):
-        reader = FakeReader(controls={"ctl-3": {"id": "ctl-3", "ruleId": "other", "rule": {"name": "Other"}}})
+    def test_the_name_does_not_decide_which_rule_is_attached(self):
+        reader = FakeReader(controls={"ctl-3": control3(ruleId="other", rule={"name": "GetUsers"})})
         result = check("s4", reader)
         self.assertIs(result["verified"], False)
-        self.assertIn("Other", result["problem"])
+        self.assertIn("'other'", result["problem"])
 
     def test_no_rule_on_the_control_is_false(self):
-        reader = FakeReader(controls={"ctl-3": {"id": "ctl-3"}})
-        result = check("s4", reader)
+        result = check("s4", FakeReader(controls={"ctl-3": control3(ruleId=None, rule=None)}))
         self.assertIs(result["verified"], False)
         self.assertIn("no rule is attached", result["problem"])
 
@@ -190,84 +222,81 @@ class Rules(unittest.TestCase):
         objects = {**OBJECTS, "s3": {"type": "control", "name": "Okta"}}
         self.assertIs(check("s4", healthy(), objects=objects)["verified"], None)
 
+    def test_a_rule_that_reported_no_id_is_unknown_and_nothing_is_looked_up(self):
+        reader = healthy()
+        result = check("s4", reader, objects={**OBJECTS, "s4": {"type": "rule", "name": "GetUsers"}})
+        self.assertIs(result["verified"], None)
+        self.assertIn("rule's id", result["problem"])
+        self.assertEqual(reader.calls, [])
 
-EVIDENCE_CONTROL = {"id": "ctl-3", "name": "Okta", "evidences": [
+    def test_a_plan_that_does_not_say_what_a_rule_step_makes_is_unknown_not_wrong(self):
+        """A plan stored before the plan said it. Guessing rule would call evidence missing."""
+        reader = healthy()
+        result = check("s4", reader, spec={"makes": None})
+        self.assertIs(result["verified"], None)
+        self.assertIn("does not say", result["problem"])
+        self.assertEqual(reader.calls, [])
+        self.assertIs(check("s4", reader, spec={"makes": "rule "})["verified"], None)
+
+    def test_what_the_specialist_called_the_object_does_not_matter(self):
+        for label in ("rule", "L1 Rule", "banana", ""):
+            objects = {**OBJECTS, "s4": {"type": label, "name": "x", "id": "rule-4"}}
+            self.assertIs(check("s4", healthy(), objects=objects)["verified"], True, label)
+
+
+EVIDENCE_CONTROL = control3(ruleId=None, rule=None, evidences=[
     {"id": "ev-1", "name": "Identify Non-Compliant Okta Applications Missing MFA"},
     {"id": "ev-2", "name": "OktaMFASupportingEvidence"},
-]}
+])
+MAKES_EVIDENCE = {"makes": "evidence"}
 
 
 class Evidence(unittest.TestCase):
-    """A rule step on an L3 control makes SQL evidence, not an attached rule. Taken from a real run."""
+    """A rule step whose plan says it makes evidence: SQL evidence on an L2 or L3 control, not an attached rule. From a real run."""
 
-    objects = {**OBJECTS, "s4": {"type": "evidence", "name": "OktaMFASupportingEvidence", "id": "ev-2"}}
+    objects = {**OBJECTS, "s4": {"type": "L3 Evidence", "name": "OktaMFASupportingEvidence", "id": "ev-2"}}
 
-    def test_evidence_that_is_on_the_control_is_verified(self):
-        self.assertEqual(check("s4", FakeReader(controls={"ctl-3": EVIDENCE_CONTROL}), objects=self.objects), {"verified": True})
+    def check(self, reader, objects=None, spec=MAKES_EVIDENCE):
+        return check("s4", reader, objects=self.objects if objects is None else objects, spec=spec)
+
+    def test_evidence_that_is_on_the_control_is_verified_and_the_platforms_name_comes_back(self):
+        result = self.check(FakeReader(controls={"ctl-3": EVIDENCE_CONTROL}))
+        self.assertEqual(result, {"verified": True, "as_found": {"name": "OktaMFASupportingEvidence"}})
 
     def test_evidence_does_not_need_a_rule_to_be_attached(self):
-        self.assertNotIn("ruleId", EVIDENCE_CONTROL)
-        self.assertEqual(check("s4", FakeReader(controls={"ctl-3": EVIDENCE_CONTROL}), objects=self.objects), {"verified": True})
+        self.assertNotIn("ruleId", {k: v for k, v in EVIDENCE_CONTROL.items() if v})
+        self.assertIs(self.check(FakeReader(controls={"ctl-3": EVIDENCE_CONTROL}))["verified"], True)
 
-    def test_evidence_that_is_not_on_the_control_is_false_and_says_what_is(self):
+    def test_evidence_that_is_not_on_the_control_is_false_and_says_which_is(self):
         reader = FakeReader(controls={"ctl-3": {**EVIDENCE_CONTROL, "evidences": [{"id": "ev-1", "name": "Another"}]}})
-        result = check("s4", reader, objects=self.objects)
+        result = self.check(reader)
         self.assertIs(result["verified"], False)
         self.assertIn("ev-2", result["problem"])
-        self.assertIn("Another", result["problem"])
+        self.assertIn("ev-1", result["problem"])
 
     def test_evidence_is_found_by_its_id_not_its_name(self):
         reader = FakeReader(controls={"ctl-3": {**EVIDENCE_CONTROL, "evidences": [{"id": "ev-9", "name": "OktaMFASupportingEvidence"}]}})
-        self.assertIs(check("s4", reader, objects=self.objects)["verified"], False)
+        self.assertIs(self.check(reader)["verified"], False)
 
     def test_evidence_with_no_id_is_unknown(self):
         objects = {**self.objects, "s4": {"type": "evidence", "name": "OktaMFASupportingEvidence"}}
         reader = FakeReader(controls={"ctl-3": EVIDENCE_CONTROL})
-        result = check("s4", reader, objects=objects)
+        result = self.check(reader, objects=objects)
         self.assertIs(result["verified"], None)
-        self.assertIn("does not name the evidence's id", result["problem"])
-        self.assertEqual(reader.calls, [])
-
-    def test_the_layer_in_the_label_does_not_matter(self):
-        """The Okta run on 29 October labelled its objects "L1 Rule", "L2 Rule" and "L3 Evidence"."""
-        reader = FakeReader(controls={"ctl-3": EVIDENCE_CONTROL})
-        for label in ("L3 Evidence", "evidence", "EVIDENCE", "Evidence "):
-            objects = {**self.objects, "s4": {"type": label, "name": "OktaMFASupportingEvidence", "id": "ev-2"}}
-            self.assertEqual(check("s4", reader, objects=objects), {"verified": True}, label)
-
-    def test_a_rule_labelled_with_its_layer_is_checked_as_a_rule(self):
-        for label in ("L1 Rule", "L2 Rule", "Rule", "rule"):
-            objects = {**OBJECTS, "s4": {"type": label, "name": "GetUsers", "id": "rule-4"}}
-            self.assertEqual(check("s4", healthy(), objects=objects), {"verified": True}, label)
-        objects = {**OBJECTS, "s4": {"type": "L1 Rule", "name": "GetUsers", "id": "rule-4"}}
-        self.assertIs(check("s4", FakeReader(controls={"ctl-3": {"id": "ctl-3"}}), objects=objects)["verified"], False)
-
-    def test_a_label_with_both_words_is_evidence(self):
-        reader = FakeReader(controls={"ctl-3": EVIDENCE_CONTROL})
-        objects = {**self.objects, "s4": {"type": "L3 Rule evidence", "name": "OktaMFASupportingEvidence", "id": "ev-2"}}
-        self.assertEqual(check("s4", reader, objects=objects), {"verified": True})
-        gone = FakeReader(controls={"ctl-3": {"id": "ctl-3", "ruleId": "rule-4", "rule": {"name": "GetUsers"}}})
-        result = check("s4", gone, objects=objects)
-        self.assertIs(result["verified"], False)
-        self.assertIn("no evidence", result["problem"])
-
-    def test_a_label_with_neither_word_is_still_unknown(self):
-        for label in ("L1 Asset", "workflow", "", "Control"):
-            objects = {**self.objects, "s4": {"type": label, "name": "Something", "id": "x-1"}}
-            reader = healthy()
-            self.assertIs(check("s4", reader, objects=objects)["verified"], None, label)
-            self.assertEqual(reader.calls, [], label)
-
-    def test_a_rule_step_that_reported_something_else_is_unknown_not_false(self):
-        objects = {**self.objects, "s4": {"type": "workflow", "name": "Something", "id": "w-1"}}
-        reader = healthy()
-        result = check("s4", reader, objects=objects)
-        self.assertIs(result["verified"], None)
-        self.assertIn("workflow", result["problem"])
+        self.assertIn("evidence's id", result["problem"])
         self.assertEqual(reader.calls, [])
 
     def test_evidence_whose_control_is_gone_is_false(self):
-        self.assertIs(check("s4", FakeReader(), objects=self.objects)["verified"], False)
+        self.assertIs(self.check(FakeReader())["verified"], False)
+
+    def test_it_is_the_plan_that_says_what_the_step_makes_not_the_label(self):
+        reader = FakeReader(controls={"ctl-3": EVIDENCE_CONTROL})
+        for label in ("L3 Evidence", "rule", "banana", ""):
+            objects = {**self.objects, "s4": {"type": label, "name": "x", "id": "ev-2"}}
+            self.assertIs(self.check(reader, objects=objects)["verified"], True, label)
+        as_rule = self.check(reader, spec={"makes": "rule"})
+        self.assertIs(as_rule["verified"], False, "the same object is checked as a rule when the plan says it makes a rule")
+        self.assertIn("no rule is attached", as_rule["problem"])
 
 
 class Links(unittest.TestCase):
@@ -330,25 +359,25 @@ class Dependencies(unittest.TestCase):
 
 
 class ScopesAndApplications(unittest.TestCase):
-    def test_a_scope_is_verified(self):
-        self.assertEqual(check("s2", healthy()), {"verified": True})
+    def test_a_scope_is_verified_and_the_platforms_name_comes_back(self):
+        self.assertEqual(check("s2", healthy()), {"verified": True, "as_found": {"name": "veza-scope"}})
 
     def test_a_missing_scope_is_false(self):
         self.assertIs(check("s2", FakeReader())["verified"], False)
 
-    def test_a_scope_with_another_name_is_false(self):
+    def test_what_the_scope_is_called_on_the_platform_does_not_decide(self):
         reader = FakeReader(scopes={"scope-1": {"id": "scope-1", "name": "other"}})
-        self.assertIs(check("s2", reader)["verified"], False)
+        self.assertEqual(check("s2", reader), {"verified": True, "as_found": {"name": "other"}})
 
     def test_an_application_is_verified(self):
-        self.assertEqual(check("s1", healthy()), {"verified": True})
+        self.assertIs(check("s1", healthy())["verified"], True)
 
     def test_a_missing_application_is_false(self):
         self.assertIs(check("s1", FakeReader())["verified"], False)
 
-    def test_an_application_is_not_compared_by_name(self):
+    def test_an_application_is_not_compared_by_name_and_its_platform_name_comes_back(self):
         reader = FakeReader(apps={"app-1": {"id": "app-1", "credentialName": "a different label"}})
-        self.assertEqual(check("s1", reader), {"verified": True})
+        self.assertEqual(check("s1", reader), {"verified": True, "as_found": {"name": "a different label"}})
 
 
 class Everything(unittest.TestCase):
@@ -440,6 +469,14 @@ class ReportingAStep(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertIs(out["verified"], True)
         self.assertNotIn("problem", out)
+
+    def test_the_answer_carries_the_name_the_platform_gives_the_object(self):
+        out = Ledger(healthy()).report("s3", object={"type": "L2 Control", "name": "What the specialist wrote", "id": "ctl-3"})
+        self.assertIs(out["verified"], True)
+        self.assertEqual(out["platform"], {"name": "Okta"})
+
+    def test_an_object_that_is_not_there_has_no_platform_name(self):
+        self.assertNotIn("platform", Ledger(FakeReader()).report("s3"))
 
     def test_a_report_the_platform_contradicts_is_kept_and_not_refused(self):
         ledger = Ledger(FakeReader())

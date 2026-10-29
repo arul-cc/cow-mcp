@@ -29,6 +29,7 @@ class PlannedStep(BaseModel):
     specialist: str
     kind: Literal["app", "scope", "control", "rule", "link", "dependency", "action", "workflow", "report", "step"]
     scope: str
+    makes: Literal["rule", "evidence"] | None = None
     position: str | None = None
     parent: str | None = None
     ends: Ends | None = None
@@ -81,6 +82,8 @@ async def run_plan(
                   test that collects a control's evidence; a "link" joins a control to a control of another layer; a
                   "dependency" feeds one control's data into another.
             scope: the layer it belongs to: App, Application Scope, L1, L2 or L3.
+            makes: required for a rule step, and only for a rule step: "rule" (an automated rule attached to its control) or
+                   "evidence" (SQL evidence written on an L2 or L3 control, which is a step whose configuration carries a sql query).
             position: for a control, its place in its assessment, e.g. "5", "5.6" or "5.6.1".
             parent: the id of the step it sits under: a rule's control, or a sub-control's parent control.
             ends: for a link or a dependency only, {from_step, to_step}: the ids of the two steps it joins.
@@ -132,7 +135,8 @@ async def run_step(
 
     Returns:
         {ok: true, ...} and, when runs are kept, how many steps are done and which step comes next. For "done" and "reused" it
-        also says whether the platform really has what you reported: verified true, false or null (null: it could not be checked).
+        also says whether the platform really has what you reported: verified true, false or null (null: it could not be checked), and
+        `platform`, the name the platform itself gives the object.
         When verified is false, `problem` says what is wrong: the object is not there or is not what you named. Put that right (redo
         the step, or report the right object) and report the step again. An error means the shape was wrong or the step is not in
         the plan: read it, fix it and call again.

@@ -89,29 +89,17 @@ class Facts:
     specs: dict[str, dict] = field(default_factory=dict)
 
 
-def verdict(verified: bool | None, problem: str | None = None, settled: bool = False) -> dict:
-    """settled marks a None that waiting will not change, because the report itself lacks what the check needs."""
+def verdict(verified: bool | None, problem: str | None = None, settled: bool = False, as_found: dict | None = None) -> dict:
+    """settled marks a None that waiting will not change, because the report itself lacks what the check needs. as_found is what the
+    platform itself calls the object, so a name or a type is taken from the platform and never from what a model wrote."""
     out: dict[str, Any] = {"verified": verified}
     if problem:
         out["problem"] = problem
     if settled:
         out["settled"] = True
+    if as_found:
+        out["as_found"] = as_found
     return out
-
-
-def _norm(value: Any) -> str:
-    return " ".join(str(value or "").split()).casefold()
-
-
-def _same(a: Any, b: Any) -> bool:
-    return _norm(a) == _norm(b)
-
-
-def _close(a: Any, b: Any) -> bool:
-    """The same name, allowing for what a specialist adds when it writes the name down, such as the layer in brackets. The id is what
-    identifies the object; the name is only there to catch an id that belongs to something else."""
-    x, y = _norm(a), _norm(b)
-    return x == y or bool(x and y and (x in y or y in x))
 
 
 def _unknown(lookup: Lookup, what: str) -> dict:
@@ -127,6 +115,14 @@ def _ends(spec: dict, objects: dict[str, dict]) -> tuple[dict | None, dict | Non
     return objects.get(ends.get("from_step") or ""), objects.get(ends.get("to_step") or "")
 
 
+def _named(name: Any) -> dict | None:
+    return {"name": name} if isinstance(name, str) and name.strip() else None
+
+
+# Every check identifies an object by what the platform itself says: its id, the number it has in its assessment, what it sits under.
+# Nothing is decided by comparing a name or a label a model wrote.
+
+
 async def check_control(facts: Facts, reader: Reader) -> dict:
     made = facts.object
     if not made or not made.get("id"):
@@ -135,50 +131,50 @@ async def check_control(facts: Facts, reader: Reader) -> dict:
     if found.found is None:
         return _unknown(found, f"control {made['id']}")
     if not found.found:
-        return verdict(False, f"control {made['id']} ({made.get('name')}) is not on the platform")
-    if made.get("name") and found.data.get("name") and not _close(made["name"], found.data["name"]):
-        return verdict(False, f"control {made['id']} is named {found.data['name']!r} on the platform, not {made['name']!r}")
-    return verdict(True)
+        return verdict(False, f"control {made['id']} is not on the platform")
+    control, as_found = found.data, _named(found.data.get("name"))
+    position = facts.spec.get("position")
+    if position and str(control.get("displayable") or "").strip() != position.strip():
+        return verdict(False, f"control {made['id']} is number {control.get('displayable')!r} on the platform, and the plan puts it at {position!r}", as_found=as_found)
+    parent = _parent(facts.spec, facts.objects)
+    if parent and parent.get("id") and control.get("parentControlId") != parent["id"]:
+        return verdict(False, f"control {made['id']} sits under control {control.get('parentControlId')!r} on the platform, and the plan puts it under {parent['id']!r}", as_found=as_found)
+    return verdict(True, as_found=as_found)
 
 
 async def check_rule(facts: Facts, reader: Reader) -> dict:
-    """A rule step makes either a rule attached to its control, or evidence on it (an L3 control holds SQL evidence, not a rule).
-    What the step reported says which, and each is looked for where it lives: on the control the step sits under."""
+    """A rule step makes what its plan says it makes (`makes`): a rule attached to its control, or evidence written on it. Either is
+    looked for on the control the step sits under, by id."""
     made = facts.object
-    if not made or not made.get("name"):
-        return verdict(None, "the report does not name the rule", settled=True)
-    label = _norm(made.get("type"))
-    # Specialists write the layer into the label ("L1 Rule", "L3 Evidence"), so it is the word in it that counts.
-    kind = "evidence" if "evidence" in label else "rule" if "rule" in label else ""
-    if not kind:
-        return verdict(None, f"a {made.get('type') or 'thing of unknown type'} reported by a rule step is not something that can be checked", settled=True)
-    if kind == "evidence" and not made.get("id"):
-        return verdict(None, "the report does not name the evidence's id", settled=True)
+    makes = facts.spec.get("makes")
+    if makes not in contract.MAKES:
+        return verdict(None, "the plan does not say whether this rule step makes a rule or evidence", settled=True)
+    if not made or not made.get("id"):
+        return verdict(None, f"the report does not name the {makes}'s id", settled=True)
     parent = _parent(facts.spec, facts.objects)
     if not parent or not parent.get("id"):
-        return verdict(None, f"the {kind}'s control did not report an id, so it cannot be checked", settled=True)
+        return verdict(None, f"the {makes}'s control did not report an id, so it cannot be checked", settled=True)
     found = await reader.control(parent["id"])
     if found.found is None:
         return _unknown(found, f"control {parent['id']}")
     if not found.found:
-        return verdict(False, f"the control {parent['id']} the {kind} belongs to is not on the platform")
+        return verdict(False, f"the control {parent['id']} the {makes} belongs to is not on the platform")
     control = found.data
 
-    if kind == "evidence":
+    if makes == "evidence":
         held = [e for e in (control.get("evidences") or []) if isinstance(e, dict)]
-        if any(e.get("id") == made["id"] for e in held):
-            return verdict(True)
-        return verdict(False, f"control {parent['id']} has no evidence {made['id']} ({made['name']}); it has {', '.join(repr(e.get('name')) for e in held) or 'none'}")
+        match = next((e for e in held if e.get("id") == made["id"]), None)
+        if match:
+            return verdict(True, as_found=_named(match.get("name")))
+        ids = ", ".join(repr(e.get("id")) for e in held[:5]) or "none"
+        return verdict(False, f"control {parent['id']} has no evidence {made['id']}; the evidence it has: {ids}")
 
     attached = control.get("ruleId") or ""
-    rule = control.get("rule") or {}
-    if made.get("id") and attached and attached == made["id"]:
-        return verdict(True)
-    if rule.get("name") and _same(rule["name"], made["name"]):
-        return verdict(True)
-    if not attached and not rule.get("name"):
+    if attached == made["id"]:
+        return verdict(True, as_found=_named((control.get("rule") or {}).get("name")))
+    if not attached:
         return verdict(False, f"no rule is attached to control {parent['id']}")
-    return verdict(False, f"control {parent['id']} has the rule {rule.get('name') or attached!r} attached, not {made['name']!r}")
+    return verdict(False, f"control {parent['id']} has the rule {attached!r} attached, not {made['id']!r}")
 
 
 async def check_link(facts: Facts, reader: Reader) -> dict:
@@ -229,10 +225,8 @@ async def check_scope(facts: Facts, reader: Reader) -> dict:
     if found.found is None:
         return _unknown(found, f"scope {made['id']}")
     if not found.found:
-        return verdict(False, f"application scope {made['id']} ({made.get('name')}) is not on the platform")
-    if made.get("name") and found.data.get("name") and not _close(made["name"], found.data["name"]):
-        return verdict(False, f"application scope {made['id']} is named {found.data['name']!r} on the platform, not {made['name']!r}")
-    return verdict(True)
+        return verdict(False, f"application scope {made['id']} is not on the platform")
+    return verdict(True, as_found=_named(found.data.get("name")))
 
 
 async def check_app(facts: Facts, reader: Reader) -> dict:
@@ -242,7 +236,9 @@ async def check_app(facts: Facts, reader: Reader) -> dict:
     found = await reader.application(made["id"])
     if found.found is None:
         return _unknown(found, f"application {made['id']}")
-    return verdict(True) if found.found else verdict(False, f"application {made['id']} ({made.get('name')}) is not on the platform")
+    if not found.found:
+        return verdict(False, f"application {made['id']} is not on the platform")
+    return verdict(True, as_found=_named(found.data.get("credentialName")))
 
 
 CHECKS: dict[str, Callable[[Facts, Reader], Awaitable[dict]]] = {
@@ -292,6 +288,8 @@ async def report_step(store: contract.RunStore, event: dict, reader: Reader, ret
     out["verified"] = result["verified"]
     if result.get("problem"):
         out["problem"] = result["problem"]
+    if result.get("as_found"):
+        out["platform"] = result["as_found"]
     return out
 
 

@@ -24,6 +24,9 @@ TERMINAL = ("done", "reused", "failed", "skipped")
 # What a step is, which the screen draws differently: a control holds tests, a dependency feeds one control into another.
 KINDS = ("app", "scope", "control", "rule", "link", "dependency", "action", "workflow", "report", "step")
 JOINS = ("link", "dependency")
+# What a rule step makes: an automated rule attached to its control, or SQL evidence written on it. Said when the plan is made, so
+# nothing has to work it out from what a specialist later calls the object.
+MAKES = ("rule", "evidence")
 MATCHES = ("full", "partial", "new")
 
 _ID = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
@@ -114,6 +117,13 @@ def _step(raw: Any, i: int) -> dict:
         step["parent"] = parent
     if (details := _text(raw.get("details"), f"steps[{i}].details", 500, required=False)):
         step["details"] = details
+    makes = raw.get("makes")
+    if kind == "rule":
+        if makes not in MAKES:
+            raise ValueError(f"steps[{i}] is a rule step, so it needs makes, one of {', '.join(MAKES)}: rule for an automated rule attached to the control, evidence for SQL evidence written on it")
+        step["makes"] = makes
+    elif makes is not None:
+        raise ValueError(f"steps[{i}].makes is only for a rule step, not a {kind}")
     ends = raw.get("ends")
     if kind in JOINS:
         if ends is None:
