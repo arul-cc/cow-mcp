@@ -1401,6 +1401,15 @@ async def get_run_evidence_data(
         }
 
 
+def _api_failed(resp: Any) -> bool:
+    """True for every shape an API call returns on failure: a message string, or an error body (`error`, `ErrorMessage`, `ErrorDetails`, or the `Message` with `Description` the platform returns for a missing resource)."""
+    if isinstance(resp, str):
+        return True
+    if not isinstance(resp, dict):
+        return False
+    return any(key in resp for key in ("error", "ErrorMessage", "ErrorDetails")) or ("Message" in resp and "Description" in resp)
+
+
 @mcp.tool()
 async def add_assessment_input(
     id: str,
@@ -1473,7 +1482,7 @@ async def add_assessment_input(
 
             logger.debug(f"add_assessment_input step 1 init patch resp: {resp1}\n")
 
-            if isinstance(resp1, str) or (isinstance(resp1, dict) and ("error" in resp1 or "ErrorMessage" in resp1 or "ErrorDetails" in resp1)):
+            if _api_failed(resp1):
                 logger.error(f"add_assessment_input step 1 error: {resp1}\n")
                 return {"success": False, "error": f"Failed step 1 (create input placeholder): {resp1}"}
 
@@ -1501,7 +1510,7 @@ async def add_assessment_input(
 
             logger.debug(f"add_assessment_input step 2 update-input resp: {resp2}\n")
 
-            if isinstance(resp2, str) or (isinstance(resp2, dict) and ("error" in resp2 or "ErrorMessage" in resp2 or "ErrorDetails" in resp2)):
+            if _api_failed(resp2):
                 logger.error(f"add_assessment_input step 2 error: {resp2}\n")
                 return {"success": False, "error": f"Failed step 2 (update-input): {resp2}"}
 
@@ -1545,7 +1554,7 @@ async def add_assessment_input(
 
             logger.debug(f"add_assessment_input step 3 final patch resp: {resp3}\n")
 
-            if isinstance(resp3, str) or (isinstance(resp3, dict) and ("error" in resp3 or "ErrorMessage" in resp3 or "ErrorDetails" in resp3)):
+            if _api_failed(resp3):
                 logger.error(f"add_assessment_input step 3 error: {resp3}\n")
                 return {"success": False, "error": f"Failed step 3 (final patch): {resp3}"}
 
@@ -1610,7 +1619,7 @@ async def add_assessment_input(
 
             logger.debug(f"add_assessment_input non-file patch resp: {resp}\n")
 
-            if isinstance(resp, str) or (isinstance(resp, dict) and ("error" in resp or "ErrorMessage" in resp or "ErrorDetails" in resp)):
+            if _api_failed(resp):
                 logger.error(f"add_assessment_input non-file error: {resp}\n")
                 return {"success": False, "error": f"Failed to add/update input '{input_key}': {resp}"}
 
